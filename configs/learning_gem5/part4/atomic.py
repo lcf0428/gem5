@@ -1,11 +1,18 @@
-import m5
 import argparse
+
+import m5
 from m5.objects import *
 
-parser = argparse.ArgumentParser(description="A simple system with different operation mode of Memory Controller")
+parser = argparse.ArgumentParser(
+    description="A simple system with different operation mode of Memory Controller"
+)
 
-parser.add_argument("--mem_operation_mode", type=str, default="normal",
-                        help="memory controller operation mode: normal, compresso, DyLeCT")
+parser.add_argument(
+    "--mem_operation_mode",
+    type=str,
+    default="normal",
+    help="memory controller operation mode: normal, compresso, DyLeCT",
+)
 
 options = parser.parse_args()
 
@@ -14,15 +21,15 @@ system = System()
 
 # 设置时钟和 CPU
 system.clk_domain = SrcClockDomain()
-system.clk_domain.clock = '1GHz'
+system.clk_domain.clock = "1GHz"
 system.clk_domain.voltage_domain = VoltageDomain()
 
 # 使用 AtomicSimpleCPU
 system.cpu = AtomicSimpleCPU()
 
 # 内存系统
-system.mem_mode = 'atomic'  # 设定为 Atomic 模式
-system.mem_ranges = [AddrRange('512MiB')]
+system.mem_mode = "atomic"  # 设定为 Atomic 模式
+system.mem_ranges = [AddrRange("512MiB")]
 
 # 创建简单的内存总线
 system.membus = SystemXBar()

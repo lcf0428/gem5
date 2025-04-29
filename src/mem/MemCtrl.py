@@ -103,7 +103,9 @@ class MemCtrl(QoSMemCtrl):
     disable_sanity_check = Param.Bool(False, "Disable port resp Q size check")
 
     # Add a new parameter for operation mode
-    operation_mode = Param.String("normal", "memory controller operation mode: normal, compresso, DyLeCT")
+    operation_mode = Param.String(
+        "normal", "memory controller operation mode: normal, compresso, DyLeCT"
+    )
 
 
 add_citation(
