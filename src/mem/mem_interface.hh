@@ -216,6 +216,11 @@ class MemInterface : public AbstractMemory
      */
     uint8_t pseudoChannel;
 
+    /**
+     * add new interface to tell memory controller the real capacity (MiB) of DRAM
+     */
+    uint64_t capacity() { return deviceSize / (1024 * 1024) * devicesPerRank * ranksPerChannel; }
+
     /** Set a pointer to the controller and initialize
      * interface based on controller parameters
      * @param _ctrl pointer to the parent controller
@@ -414,6 +419,16 @@ class MemInterface : public AbstractMemory
 
     typedef MemInterfaceParams Params;
     MemInterface(const Params &_p);
+
+    /* DRAM only */
+    virtual void atomicRead(uint8_t* ptr, Addr addr, size_t size) {
+        panic("MemInterface atomicRead should not be executed from here.\n");
+    }
+
+    /* DRAM only */
+    virtual void atomicWrite(const std::vector<uint8_t>& data, Addr addr, size_t size, size_t base = 0) {
+        panic("MemInterface atomicWrite should not be executed from here.\n");
+    }
 };
 
 

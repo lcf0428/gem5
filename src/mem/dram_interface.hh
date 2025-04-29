@@ -805,6 +805,10 @@ class DRAMInterface : public MemInterface
     bool writeRespQueueFull() const override { return false;}
 
     DRAMInterface(const DRAMInterfaceParams &_p);
+
+    void atomicRead(uint8_t* ptr, Addr addr, size_t size) override;
+
+    void atomicWrite(const std::vector<uint8_t>& data, Addr addr, size_t size, size_t base = 0) override;
 };
 
 } // namespace memory

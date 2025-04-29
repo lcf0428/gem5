@@ -544,6 +544,17 @@ class Packet : public Printable, public Extensible<Packet>
      */
     SenderState *senderState;
 
+    /* ===== special for compresso ===== */
+    /// enable encaptulate
+    PacketPtr comprBackup;
+
+    std::unordered_map<uint64_t, std::vector<uint8_t>> comprMetaDataMap;  /* metaDataMap[PPN] -> get metadata */
+
+    std::unordered_map<uint64_t, uint8_t> comprSubPacketStatus;
+
+    uint64_t comprEntryCnt;
+    /* ===== end for compresso ===== */
+
     /**
      * Push a new sender state to the packet and make the current
      * sender state the predecessor of the new one. This should be
@@ -881,7 +892,8 @@ class Packet : public Printable, public Extensible<Packet>
            htmReturnReason(HtmCacheFailure::NO_FAIL),
            htmTransactionUid(0),
            headerDelay(0), snoopDelay(0),
-           payloadDelay(0), senderState(NULL)
+           payloadDelay(0), senderState(NULL),
+           comprBackup(nullptr)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -922,7 +934,8 @@ class Packet : public Printable, public Extensible<Packet>
            htmReturnReason(HtmCacheFailure::NO_FAIL),
            htmTransactionUid(0),
            headerDelay(0),
-           snoopDelay(0), payloadDelay(0), senderState(NULL)
+           snoopDelay(0), payloadDelay(0), senderState(NULL),
+           comprBackup(nullptr)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -953,7 +966,8 @@ class Packet : public Printable, public Extensible<Packet>
            headerDelay(pkt->headerDelay),
            snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
-           senderState(pkt->senderState)
+           senderState(pkt->senderState),
+           comprBackup(nullptr)
     {
         if (!clear_flags)
             flags.set(pkt->flags & COPY_FLAGS);
@@ -984,6 +998,64 @@ class Packet : public Printable, public Extensible<Packet>
                 allocate();
             }
         }
+    }
+
+
+    /*
+     *  alternate constructor specially for MC
+     */
+    Packet(const PacketPtr pkt)
+    :  Extensible<Packet>(*pkt),
+        cmd(pkt->cmd), id(pkt->id), req(pkt->req),
+        data(nullptr),
+        addr(pkt->addr), _isSecure(pkt->_isSecure), size(pkt->size),
+        bytesValid(pkt->bytesValid),
+        _qosValue(pkt->qosValue()),
+        htmReturnReason(HtmCacheFailure::NO_FAIL),
+        htmTransactionUid(0),
+        headerDelay(pkt->headerDelay),
+        snoopDelay(0),
+        payloadDelay(pkt->payloadDelay),
+        senderState(pkt->senderState),
+        comprBackup(pkt)
+    {
+        flags.set(pkt->flags & COPY_FLAGS);
+
+        flags.set(VALID_ADDR|VALID_SIZE);
+
+        // printf("The address is pkt is 0x%lx\n", (uint64_t)pkt);
+
+        // printf("If the origin pkt is valid: %d, %d\n", pkt->flags.isSet(VALID_ADDR), pkt->flags.isSet(VALID_SIZE));
+        // printf("If the pkt is valid: %d, %d\n", flags.isSet(VALID_ADDR), flags.isSet(VALID_SIZE));
+        // printf("If the pkt is DYnamic %d\n", pkt->flags.isSet(DYNAMIC_DATA));
+        // printf("If the pkt is STATIC %d\n", pkt->flags.isSet(STATIC_DATA));
+
+        // printf("step 1 in Packet\n");
+        if (pkt->isHtmTransactional()) {
+            // printf("step 2 in Packet\n");
+            setHtmTransactional(pkt->getHtmTransactionUid());
+        }
+
+        // printf("step 3 in Packet\n");
+        if (pkt->htmTransactionFailedInCache()) {
+            // printf("step 4 in Packet\n");
+            setHtmTransactionFailedInCache(
+                pkt->getHtmTransactionFailedInCacheRC()
+            );
+        }
+        // printf("step 5 in Packet\n");
+
+        // should we allocate space for data, or not, the express
+        // snoops do not need to carry any data as they only serve to
+        // co-ordinate state changes
+
+        if (pkt->flags.isSet(STATIC_DATA)) {
+            data = pkt->data;
+            flags.set(STATIC_DATA);
+        } else {
+            allocate();
+        }
+        // printf("step 6 in Packet\n");
     }
 
     /**
@@ -1304,6 +1376,18 @@ class Packet : public Printable, public Extensible<Packet>
         }
     }
 
+    void
+    setDataForMC(const uint8_t *p, uint64_t ofs, size_t size) {
+        // assert(p != getPtr<uint8_t>() || flags.isSet(STATIC_DATA));
+        assert(p != getPtr<uint8_t>());
+
+        if (p != getPtr<uint8_t>()) {
+            // for packet with allocated dynamic data, we copy data from
+            // one to the other, e.g. a forwarded response to a response
+            std::memcpy(getPtr<uint8_t>() + ofs, p, size);
+        }
+    }
+
     /**
      * Copy data into the packet from the provided block pointer,
      * which is aligned to the given block size.
@@ -1334,6 +1418,11 @@ class Packet : public Printable, public Extensible<Packet>
                 // Disabled bytes stay untouched
             }
         }
+    }
+
+    void writeDataForMC(uint8_t *p, uint64_t ofs, size_t size) const {
+        assert(comprBackup);
+        std::memcpy(p, getConstPtr<uint8_t>() + ofs, size);
     }
 
     /**
@@ -1545,6 +1634,15 @@ class Packet : public Printable, public Extensible<Packet>
      * failed transaction, this function returns the failure reason.
      */
     HtmCacheFailure getHtmTransactionFailedInCacheRC() const;
+
+
+    void setSizeForMC(unsigned sz = 64) { size = sz; }
+
+    /* allocate the space */
+    void allocateForMC() {
+        deleteData();
+        allocate();
+    }
 };
 
 } // namespace gem5

@@ -448,6 +448,14 @@ AbstractMemory::access(PacketPtr pkt)
         if (pmemAddr) {
             pkt->setData(host_addr);
         }
+
+        printf("Atomic read marker: ");
+        uint8_t* start = pkt->getPtr<uint8_t>();
+        for (int ts = 0; ts < pkt->getSize(); ts++) {
+           printf("%02x ", static_cast<unsigned int>(start[ts]));
+        }
+        printf("\n");
+
         TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
         if (collectStats) {
             stats.numReads[pkt->req->requestorId()]++;
@@ -465,6 +473,14 @@ AbstractMemory::access(PacketPtr pkt)
     } else if (pkt->isWrite()) {
         if (writeOK(pkt)) {
             if (pmemAddr) {
+
+                printf("Atomic write marker: ");
+                uint8_t* start = pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < pkt->getSize(); ts++) {
+                   printf("%02x ", static_cast<unsigned int>(start[ts]));
+                }
+                printf("\n");
+
                 pkt->writeData(host_addr);
                 DPRINTF(MemoryAccess, "%s write due to %s\n",
                         __func__, pkt->print());
@@ -486,6 +502,367 @@ AbstractMemory::access(PacketPtr pkt)
 }
 
 void
+AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer) {
+    assert(pkt->comprBackup);
+    PacketPtr real_recv_pkt = pkt->comprBackup;
+
+    if (real_recv_pkt->cacheResponding()) {
+        DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
+                real_recv_pkt->getAddr());
+        return;
+    }
+
+    if (real_recv_pkt->cmd == MemCmd::CleanEvict || real_recv_pkt->cmd == MemCmd::WritebackClean) {
+        DPRINTF(MemoryAccess, "CleanEvict  on 0x%x: not responding\n",
+                real_recv_pkt->getAddr());
+      return;
+    }
+
+    assert(pkt->getAddrRange().isSubset(range));
+
+    /* prepare the auxiliary information */
+
+    std::vector<uint8_t> sizeMap = {0, 8, 32, 64};
+
+    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->comprMetaDataMap;
+
+    /* get initial information */
+    unsigned size = pkt->getSize();
+    unsigned offset = pkt->getAddr() & (burst_size - 1);
+    unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    Addr base_addr = pkt->getAddr();
+    Addr addr = base_addr;
+
+    if (pkt->cmd == MemCmd::SwapReq) {
+        assert(size == 64);
+        assert(base_addr % 64 == 0);
+
+        uint64_t ppn = addr >> 12;
+
+        assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+
+        std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+        uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+        uint8_t type = getType(metaData, cacheLineIdx);
+
+        std::vector<uint8_t> cacheLine(64, 0);
+
+        /* the pkt should be only covered by one cacheLine */
+
+        memcpy(cacheLine.data(), pkt->getPtr<uint8_t>(), 64);
+
+        /* compress the cacheline */
+        std::vector<uint8_t> compressed = compress(cacheLine);
+
+        if (compressed.size() > 32) {
+            assert(compressed.size() == 64);
+        }
+
+        if (pageNum == ppn) {
+            assert(mPageBuffer.size() == metaData.size());
+            for (int temp = 0; temp < metaData.size(); temp++) {
+                assert(mPageBuffer[temp] == metaData[temp]);
+            }
+            uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
+
+            memcpy(pageBuffer_addr, compressed.data(), sizeMap[type]);
+
+        } else {
+            std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
+            bool inInflate = cLStatus.first;
+            Addr real_addr = cLStatus.second;
+
+            if (inInflate) {
+                type = 0b11;
+            }
+
+            if (type != 0) {
+                if (!inInflate) {
+                    assert(compressed.size() <= sizeMap[type]);
+                }
+
+                uint8_t* host_addr = toHostAddr(real_addr);
+
+                if (pmemAddr) {
+                    if (type == 0b11) {
+                        std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+                    } else {
+                        std::memcpy(host_addr, compressed.data(), compressed.size());
+                    }
+                }
+            }
+        }
+        if (!real_recv_pkt->isAtomicOp()) {
+            assert(!pkt->req->isInstFetch());
+            TRACE_PACKET("Read/Write");
+            if (collectStats) {
+                stats.numOther[pkt->req->requestorId()]++;
+            }
+        }
+    } else if (pkt->isRead()) {
+        assert(!pkt->isWrite());
+        if (real_recv_pkt->isLLSC()) {
+            assert(!real_recv_pkt->fromCache());
+            // if the packet is not coming from a cache then we have
+            // to do the LL/SC tracking here
+            // printf("Abstract Memory Line %d: have to track load locked\n", __LINE__);
+            trackLoadLocked(real_recv_pkt);
+        }
+
+        for (unsigned int i = 0; i < pkt_count; i++) {
+            uint64_t ppn = addr >> 12;
+            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+
+            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+
+            std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+            // printf("Abstract Memory Line %d: the first byte of metaData is %X\n", __LINE__, static_cast<unsigned int>(metaData[0]));
+
+            // printf("Abstract Memory Line %d: the ppn is %lld, the pageNum is %lld\n", __LINE__, ppn, pageNum);
+            // printf("the pageNum is %d, the metadata is :\n", ppn);
+            // printf("the metadata is :\n");\
+            // for (int k = 0; k < 64; k++) {
+            //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+            // }
+            // printf("\n");
+
+            uint8_t type = getType(metaData, cacheLineIdx);
+            std::vector<uint8_t> cacheLine(64, 0);
+
+            if (pageNum == ppn) {
+                assert(mPageBuffer.size() == metaData.size());
+                for (int temp = 0; temp < metaData.size(); temp++) {
+                    assert(mPageBuffer[temp] == metaData[temp]);
+                }
+                if (type != 0) {
+                    uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
+                    std::memcpy(cacheLine.data(), pageBuffer_addr, sizeMap[type]);
+                }
+                restoreData(cacheLine, type);
+                assert(cacheLine.size() == 64);
+
+                uint8_t loc = addr & 0x3F;
+                uint64_t ofs = addr - pkt->getAddr();
+                size_t readSize = std::min(pkt->getSize() - ofs, 64UL - loc);
+                // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+                pkt->setDataForMC(cacheLine.data() + loc, ofs, readSize);
+
+            } else {
+                std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
+
+                bool inInflate = cLStatus.first;
+                Addr real_addr = cLStatus.second;
+
+                // printf("Abstract Memory Line %d: get the real addr 0x%lx\n", __LINE__, real_addr);
+
+               assert(pmemAddr);
+               uint8_t *host_addr = toHostAddr(real_addr);
+
+               if (inInflate) {
+                   type = 0b11;  // autually uncompressed;
+                   std::memcpy(cacheLine.data(), host_addr, 64);
+               } else {
+                   if (type != 0) {
+                    //    printf("Abstract Memory Line %d: type != 0, type is %d\n", __LINE__, static_cast<unsigned int>(type));
+
+                    //    printf("Abstract Memory Line %d: the host addr is 0x%llx\n", __LINE__, (uint64_t)host_addr);
+
+                       std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
+
+                    //    printf("Abstract Memory Line %d: finish read the compressed data\n", __LINE__);
+                    //    printf("the read compressed data is :\n");
+                    //    for (int ts = 0; ts < sizeMap[type]; ts++) {
+                    //        if (ts % 8 == 0) {
+                    //            printf("\n");
+                    //        }
+                    //        printf("%02x ", static_cast<unsigned int>(cacheLine[ts]));
+                    //    }
+                    //    printf("\n");
+
+                   }
+               }
+
+                restoreData(cacheLine, type);
+                // printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
+                assert(cacheLine.size() == 64);
+
+                // for (int u = 0; u < 8; u++) {
+                //    for (int v = 0; v < 8; v++) {
+                //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                //    }
+                //    printf("\n");
+                // }
+                // printf("\n");
+
+                uint8_t loc = addr & 0x3F;
+                uint64_t ofs = addr - pkt->getAddr();
+                size_t size = std::min(pkt->getSize() - ofs, 64UL - loc);
+                // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+                pkt->setDataForMC(cacheLine.data() + loc, ofs, size);
+                // printf("Abstract Memory Line %d: finish set data for MC\n", __LINE__);
+
+            }
+
+            addr = (addr | (burst_size - 1)) + 1;
+        }
+
+        printf("Atomic read marker: ");
+        uint8_t* start = pkt->getPtr<uint8_t>();
+        for (int ts = 0; ts < pkt->getSize(); ts++) {
+           printf("%02x ", static_cast<unsigned int>(start[ts]));
+        }
+        printf("\n");
+
+        TRACE_PACKET(real_recv_pkt->req->isInstFetch() ? "IFetch" : "Read");
+        if (collectStats) {
+            stats.numReads[real_recv_pkt->req->requestorId()]++;
+            stats.bytesRead[real_recv_pkt->req->requestorId()] += real_recv_pkt->getSize();
+            if (real_recv_pkt->req->isInstFetch()) {
+                stats.bytesInstRead[real_recv_pkt->req->requestorId()] += real_recv_pkt->getSize();
+            }
+        }
+
+    } else if (pkt->isInvalidate() || pkt->isClean()) {
+        assert(!pkt->isWrite());
+        // in a fastmem system invalidating and/or cleaning packets
+        // can be seen due to cache maintenance requests
+
+        // no need to do anything
+    } else if (pkt->isWrite()) {
+        if (writeOK(real_recv_pkt)) {
+            /* assert the pkt should be burst_size/cacheline aligned */
+            assert(offset == 0);
+            assert((size & (burst_size - 1)) == 0);
+            assert(pkt_count == (size / burst_size));
+
+            printf("Atomic write marker: ");
+            uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+               printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+
+            for (unsigned int i = 0; i < pkt_count; i++) {
+                uint64_t ppn = addr >> 12;
+                uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+
+                assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+                std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+                uint8_t type = getType(metaData, cacheLineIdx);
+
+                std::vector<uint8_t> cacheLine(64, 0);
+
+                uint64_t ofs = addr - pkt->getAddr();
+
+                pkt->writeDataForMC(cacheLine.data(), ofs, 64);
+
+                /* compress the cacheline */
+                std::vector<uint8_t> compressed = compress(cacheLine);
+
+                if (compressed.size() > 32) {
+                   assert(compressed.size() == 64);
+                }
+
+                // printf("the metadata is :\n");
+                // for (int k = 0; k < 64; k++) {
+                //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                // }
+                // printf("\n");
+
+                // printf("cacheline idx is %d\n", cacheLineIdx);
+
+                if (pageNum == ppn) {
+                    assert(mPageBuffer.size() == metaData.size());
+                    for (int temp = 0; temp < metaData.size(); temp++) {
+                        assert(mPageBuffer[temp] == metaData[temp]);
+                    }
+                    uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
+
+                    memcpy(pageBuffer_addr, compressed.data(), sizeMap[type]);
+                } else {
+                    std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
+
+                    bool inInflate = cLStatus.first;
+                    Addr real_addr = cLStatus.second;
+
+                    if (inInflate) {
+                        type = 0b11;
+                    }
+
+                    if (type != 0) {
+                        // printf("if inInflate: %d\n", inInflate);
+                        if (!inInflate) {
+                            // printf("the compressed size is %d\n", compressed.size());
+                            // printf("the space is %d\n", sizeMap[type]);
+                            assert(compressed.size() <= sizeMap[type]);
+                        }
+
+                        uint8_t* host_addr = toHostAddr(real_addr);
+
+                        // printf("the host address is 0x%llx:\n", reinterpret_cast<uint64_t>(host_addr));
+
+                        // printf("the original cacheline value is :\n");
+                        // for (int qw = 0; qw < 8; qw++) {
+                        //    for (int er = 0; er < 8; er++) {
+                        //        printf("%02x ", cacheLine[qw* 8 + er]);
+                        //    }
+                        //    printf("\n");
+                        // }
+                        // printf("\n");
+
+
+                        uint64_t test_size = 0;
+                        if (pmemAddr) {
+                           if (type == 3) {
+                            //    printf("type = 3 \n");
+                               std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+                               test_size = cacheLine.size();
+                           } else {
+                               std::memcpy(host_addr, compressed.data(), compressed.size());
+                               test_size = compressed.size();
+                           }
+                        }
+
+                        // for (int qw = 0; qw < test_size; qw++) {
+                        //    if (qw % 8 == 0) {
+                        //        printf("\n");
+                        //    }
+                        //    printf("%02x ", host_addr[qw]);
+                        // }
+                        // printf("\n");
+                    }
+                }
+                Addr old_addr = addr;
+                addr = (addr | (burst_size - 1)) + 1;
+                assert(addr == old_addr + burst_size);
+            }
+
+            DPRINTF(MemoryAccess, "%s write due to %s\n",
+                __func__, real_recv_pkt->print());
+            assert(!real_recv_pkt->req->isInstFetch());
+            TRACE_PACKET("Write");
+            if (collectStats) {
+                stats.numWrites[real_recv_pkt->req->requestorId()]++;
+                stats.bytesWritten[real_recv_pkt->req->requestorId()] += real_recv_pkt->getSize();
+            }
+        }
+    } else {
+        panic("Unexpected packet %s", pkt->print());
+    }
+
+    if (pkt->needsResponse()) {
+        pkt->makeResponse();
+    }
+}
+
+
+void
 AbstractMemory::functionalAccess(PacketPtr pkt)
 {
     assert(pkt->getAddrRange().isSubset(range));
@@ -496,12 +873,28 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
         if (pmemAddr) {
             pkt->setData(host_addr);
         }
+
+        uint8_t* test_start = pkt->getPtr<uint8_t>();
+        printf("Functional read: ");
+        for (int u = 0; u < pkt->getSize(); u++) {
+            printf("%02x ", static_cast<unsigned int>(test_start[u]));
+        }
+        printf("\n");
+
         TRACE_PACKET("Read");
         pkt->makeResponse();
     } else if (pkt->isWrite()) {
         if (pmemAddr) {
             pkt->writeData(host_addr);
         }
+
+        printf("Functional write: ");
+        uint8_t* test_start = pkt->getPtr<uint8_t>();
+        for (int i = 0; i < pkt->getSize(); i++) {
+            printf("%02x ", static_cast<unsigned int>(test_start[i]));
+        }
+        printf("\n");
+
         TRACE_PACKET("Write");
         pkt->makeResponse();
     } else if (pkt->isPrint()) {
@@ -518,6 +911,754 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
               pkt->cmdString());
     }
 }
+
+void
+AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer) {
+    /* receive a pkt from outside world */
+    assert(pkt->comprBackup);  // the memory controller should be in compresso operation mode
+    PacketPtr real_recv_pkt = pkt->comprBackup;
+
+    /* get initial information */
+    unsigned size = pkt->getSize();
+    unsigned offset = pkt->getAddr() & (burst_size - 1);
+    unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    Addr base_addr = pkt->getAddr();
+    Addr addr = base_addr;
+
+    /* prepare the auxiliary information */
+    std::vector<uint8_t> sizeMap = {0, 8, 32, 64};
+    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->comprMetaDataMap;
+
+    /* start access the real memory */
+    uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+    if (pkt->isRead()) {
+        /* process the pkt in order */
+        for (unsigned int i = 0; i < pkt_count; i++) {
+            uint64_t ppn = addr >> 12;
+            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+
+            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+            std::vector<uint8_t> metaData = metaDataMap[ppn];
+            uint8_t type = getType(metaData, cacheLineIdx);
+            std::vector<uint8_t> cacheLine(64, 0);
+
+            if (ppn == pageNum) {
+                assert(mPageBuffer.size() == metaData.size());
+                for (int temp = 0; temp < metaData.size(); temp++) {
+                    assert(mPageBuffer[temp] == metaData[temp]);
+                }
+                if (type != 0) {
+                    uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
+                    std::memcpy(cacheLine.data(), pageBuffer_addr, sizeMap[type]);
+                }
+                restoreData(cacheLine, type);
+                assert(cacheLine.size() == 64);
+
+                uint8_t loc = addr & 0x3F;
+                uint64_t ofs = addr - pkt->getAddr();
+                size_t readSize = std::min(pkt->getSize() - ofs, 64UL - loc);
+                // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+                pkt->setDataForMC(cacheLine.data() + loc, ofs, readSize);
+
+            } else {
+                std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
+
+                bool inInflate = cLStatus.first;
+                Addr real_addr = cLStatus.second;
+
+                // printf("Abstract Memory Line %d: get the real addr 0x%lx\n", __LINE__, real_addr);
+
+                assert(pmemAddr);
+                uint8_t *host_addr = toHostAddr(real_addr);
+
+                if (inInflate) {
+                   type = 0b11;  // autually uncompressed;
+                   std::memcpy(cacheLine.data(), host_addr, 64);
+                } else {
+                    if (type != 0) {
+                        // printf("Abstract Memory Line %d: type != 0, type is %d\n", __LINE__, static_cast<unsigned int>(type));
+                        // printf("Abstract Memory Line %d: the host addr is 0x%llx\n", __LINE__, (uint64_t)host_addr);
+
+                        std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
+                        // printf("Abstract Memory Line %d: finish read the compressed data\n", __LINE__);
+                        // printf("the read compressed data is :\n");
+                        // for (int ts = 0; ts < sizeMap[type]; ts++) {
+                        //     if (ts % 8 == 0) {
+                        //         printf("\n");
+                        //     }
+                        //     printf("%02x ", static_cast<unsigned int>(cacheLine[ts]));
+                        // }
+                        // printf("\n");
+
+                    }
+                }
+
+                restoreData(cacheLine, type);
+                // printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
+                assert(cacheLine.size() == 64);
+
+                // for (int u = 0; u < 8; u++) {
+                //    for (int v = 0; v < 8; v++) {
+                //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                //    }
+                //    printf("\n");
+                // }
+                // printf("\n");
+
+                uint8_t loc = addr & 0x3F;
+                uint64_t ofs = addr - pkt->getAddr();
+                size_t size = std::min(pkt->getSize() - ofs, 64UL - loc);
+                // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+                pkt->setDataForMC(cacheLine.data() + loc, ofs, size);
+                // printf("Abstract Memory Line %d: finish set data for MC\n", __LINE__);
+
+            }
+            addr = (addr | (burst_size - 1)) + 1;
+        }
+
+        printf("Functional read: ");
+        uint8_t* start = pkt->getPtr<uint8_t>();
+        for (int ts = 0; ts < pkt->getSize(); ts++) {
+           printf("%02x ", static_cast<unsigned int>(start[ts]));
+        }
+        printf("\n");
+
+        TRACE_PACKET("Read");
+        real_recv_pkt->makeResponse();
+    } else if (pkt->isWrite()) {
+        /* assert the pkt should be burst_size/cacheline aligned */
+        assert(offset == 0);
+        assert((size & (burst_size - 1)) == 0);
+        assert(pkt_count == (size / burst_size));
+        printf("Functional write: ");
+        uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+        for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+           printf("%02x ", static_cast<unsigned int>(start[ts]));
+        }
+        printf("\n");
+
+        for (unsigned int i = 0; i < pkt_count; i++) {
+            uint64_t ppn = addr >> 12;
+            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+
+            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+            std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+            uint8_t type = getType(metaData, cacheLineIdx);
+
+            std::vector<uint8_t> cacheLine(64, 0);
+
+            uint64_t ofs = addr - pkt->getAddr();
+
+            pkt->writeDataForMC(cacheLine.data(), ofs, 64);
+
+            /* compress the cacheline */
+            std::vector<uint8_t> compressed = compress(cacheLine);
+
+            if (compressed.size() > 32) {
+                assert(compressed.size() == 64);
+            }
+
+            // printf("the metadata is :\n");
+            // for (int k = 0; k < 64; k++) {
+            //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+            // }
+            // printf("\n");
+
+            if (pageNum == ppn) {
+                verifyMetaData(type, cacheLine, compressed.size());
+                assert(mPageBuffer.size() == metaData.size());
+                for (int temp = 0; temp < metaData.size(); temp++) {
+                    assert(mPageBuffer[temp] == metaData[temp]);
+                }
+                uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
+
+                memcpy(pageBuffer_addr, compressed.data(), sizeMap[type]);
+            } else {
+                std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
+
+                bool inInflate = cLStatus.first;
+                Addr real_addr = cLStatus.second;
+
+                if (inInflate) {
+                    type = 0b11;
+                }
+
+                verifyMetaData(type, cacheLine, compressed.size());
+
+                if (type != 0) {
+                    // printf("if inInflate: %d\n", inInflate);
+                    if (!inInflate) {
+                        // printf("the compressed size is %d\n", compressed.size());
+                        // printf("the space is %d\n", sizeMap[type]);
+                        assert(compressed.size() <= sizeMap[type]);
+                    }
+
+                    uint8_t* host_addr = toHostAddr(real_addr);
+
+                    // printf("the host address is 0x%llx:\n", host_addr);
+                    // for (int qw = 0; qw < 8; qw++) {
+                    //     printf("%02x ", host_addr[qw]);
+                    // }
+                    // printf("\n");
+
+                    // printf("the original cacheline value is :\n");
+                    // for (int qw = 0; qw < 8; qw++) {
+                    //     for (int er = 0; er < 8; er++) {
+                    //         printf("%02x ", cacheLine[qw* 8 + er]);
+                    //     }
+                    //     printf("\n");
+                    // }
+                    // printf("\n");
+
+                    uint64_t test_size = 0;
+                    if (pmemAddr) {
+                        if (type == 0b11) {
+                            std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+                            test_size = cacheLine.size();
+                        } else {
+                            std::memcpy(host_addr, compressed.data(), compressed.size());
+                            test_size = compressed.size();
+                        }
+                    }
+
+                    // for (int qw = 0; qw < test_size; qw++) {
+                    //     if (qw % 8 == 0) {
+                    //         printf("\n");
+                    //     }
+                    //     printf("%02x ", host_addr[qw]);
+                    // }
+                    // printf("\n");
+                } else {
+                    /* all zero */
+                }
+            }
+            Addr old_addr = addr;
+            addr = (addr | (burst_size - 1)) + 1;
+            assert(addr == old_addr + burst_size);
+        }
+
+        TRACE_PACKET("Write");
+        real_recv_pkt->makeResponse();
+    } else if (pkt->isPrint()) {
+        uint8_t *host_addr = toHostAddr(real_recv_pkt->getAddr());
+        Packet::PrintReqState *prs =
+            dynamic_cast<Packet::PrintReqState*>(pkt->senderState);
+        assert(prs);
+        // Need to call printLabels() explicitly since we're not going
+        // through printObj().
+        prs->printLabels();
+        // Right now we just print the single byte at the specified address.
+        ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+    } else {
+        panic("AbstractMemory: unimplemented functional command %s",
+              pkt->cmdString());
+    }
+}
+
+uint8_t
+AbstractMemory::getType(const std::vector<uint8_t>& metaData, const uint8_t& index) {
+    int startPos = (2 + 32) * 8 + index * 2;
+    int loc = startPos / 8;
+    int ofs = startPos % 8;
+    uint8_t type = 0b11 & (metaData[loc] >> (6 - ofs));
+    return type;
+}
+
+std::vector<uint8_t>
+AbstractMemory::compress(const std::vector<uint8_t>& cacheLine) {
+    assert(cacheLine.size() == 64);
+    std::pair<uint64_t, std::vector<uint16_t>> transformed = BDXTransform(cacheLine);
+    uint64_t base = transformed.first;
+    std::vector<uint8_t> compressed = compressC(transformed.second);
+    for (int i = 0; i < 4; i++) {
+        uint8_t val = base & 0xFF;
+        base >>= 8;
+        compressed.insert(compressed.begin(), val);
+    }
+    if (compressed.size() > 32) {
+        return cacheLine;
+    }
+    return compressed;
+}
+
+void
+AbstractMemory::decompress(std::vector<uint8_t>& data) {
+    uint64_t base = 0;
+    for (int i = 0; i < 4; i++) {
+        base = (base << 8) | data[0];
+        data.erase(data.begin());
+    }
+    std::vector<uint16_t> interm = decompressC(data);
+    data = BDXRecover(base, interm);
+}
+
+std::pair<uint64_t, std::vector<uint16_t>>
+AbstractMemory::BDXTransform(const std::vector<uint8_t>& origin) {
+    assert(origin.size() == 64);
+    /* group into 32 bits * 16 */
+    std::vector<uint64_t> data(16);
+    for (int i = 0; i < 16; i++) {
+        data[i] = 0;
+        for (int j = 0; j < 4; j++) {
+            data[i] = (data[i] << 8) | (origin[i * 4 + j]);
+        }
+    }
+
+    // step 1: subtract. the 32th bit shows the plus or minus 0(+) 1(-)
+    for (int i = 15; i >= 1; i--) {
+        if (data[i] < data[i - 1]) {
+            data[i] = (1ULL << 32) | (data[i - 1] - data[i]);
+        } else {
+            data[i] = (data[i] - data[i - 1]);
+        }
+    }
+
+    // step 2: change orientation;
+    // transform the 33 bit * 15 matrix to 15 bit * 33 matrix
+    std::vector<uint16_t> DBX(33, 0);
+    for (int i = 0; i < 33; i++) {
+        for (int j = 1; j < 16; j++) {
+            DBX[i] = DBX[i] | (((data[j] >> i) & 0x1) << (j - 1));
+        }
+    }
+
+    // step 3: XOR the neighbor
+    for (int i = 32; i >= 1; i--) {
+        DBX[i] = DBX[i] ^ DBX[i - 1];
+    }
+    uint64_t base = data[0];
+
+    return make_pair(base, DBX);
+}
+
+std::vector<uint8_t>
+AbstractMemory::BDXRecover(const uint64_t& base, std::vector<uint16_t>& DBX) {
+    assert(DBX.size() == 33);
+    // step 1: XOR
+    for (int i = 1; i < 33; i++) {
+        DBX[i] = DBX[i] ^ DBX[i - 1];
+    }
+
+    // step 2: reverse orientation
+    // change the 15 bit * 33 matrix back to 33 bit * 15 matrix
+    std::vector<uint64_t> data(16);
+    for (int i = 1; i < 16; i++) {
+        for (int j = 0; j < 33; j++) {
+            uint64_t temp = (DBX[j] >> (i - 1)) & 0x1ULL;
+            data[i] = data[i] | (temp << j);
+        }
+    }
+
+    // step 3: add the value;
+    data[0] = base;
+    for (int i = 1; i < 16; i++) {
+        bool sign = (((data[i] >> 32) & 0x1) == 0);
+        if (sign) {
+            data[i] = data[i - 1] + (data[i] & ((1ULL << 32) - 1));
+        } else {
+            data[i] = data[i - 1] - (data[i] & ((1ULL << 32) - 1));
+        }
+    }
+
+    std::vector<uint8_t> res(64);
+    for (int i = 0; i < 16; i++) {
+        for (int j = 0; j < 4; j++) {
+            res[i * 4 + j] = (data[i] >> ((3 - j) * 8)) & ((1 << 8) - 1);
+        }
+    }
+    return res;
+}
+
+/*
+     val: 0b________
+     idx: how many bits that already used
+     len: the code length
+     code: the corresponding pattern
+
+ */
+
+void
+AbstractMemory::supply(uint16_t code, int len, uint8_t& val, int& idx, std::vector<uint8_t>& compressed) {
+    assert((code & (~((1 << len) - 1))) == 0);
+    while (len) {
+        if (idx + len > 8) {
+            int front = 8 - idx;
+            len -= front;
+            val = val | (code >> len);
+            compressed.emplace_back(val);
+            idx = 0;
+            val = 0;
+        } else {
+            val = val | (code << (8 - len - idx));
+            idx += len;
+            if (idx == 8) {
+                compressed.emplace_back(val);
+                val = 0;
+                idx = 0;
+            }
+            break;
+        }
+    }
+
+}
+
+std::vector<uint8_t>
+AbstractMemory::compressC(const std::vector<uint16_t>& inputData) {
+    assert(inputData.size() == 33);
+    int idx = 0;
+    int cnt = 0;
+    uint8_t val = 0;
+    std::vector<uint8_t> compressed;
+    for (int i = 0; i < 33; i++) {;
+        assert(inputData[i] < (1 << 15));
+        if (inputData[i] == 0) {
+            cnt++;
+        } else {
+            if (cnt != 0) {
+                if (cnt == 1) {
+                    uint16_t code = 0b001;
+                    supply(code, 3, val, idx, compressed);
+                } else {
+                    uint16_t code = (0b1 << 5) | (cnt - 2);
+                    supply(code, 7, val, idx, compressed);
+                }
+                cnt = 0;
+            }
+            // try to match the pattern
+            if (inputData[i] == ((1 << 15) - 1)){
+                uint16_t code = 0b0;
+                supply(code, 5, val, idx, compressed);
+
+            } else {
+                if (i > 0 && inputData[i] == inputData[i-1]) {
+                    uint16_t code = 0b1;
+                    supply(code, 5, val, idx, compressed);
+                } else {
+                    bool consecutive = false;
+                    int startPos = -1;
+                    int oneCnt = 0;
+                    int oneIdx = 0;
+                    uint16_t cur = inputData[i];
+                    uint16_t mask = (1 << 15);
+                    while ((mask != 0) && ((~mask) != 0)) {
+                        if ((cur & mask) != 0) {
+                            if (startPos == -1) {
+                                startPos = oneIdx;
+                            } else if (startPos + 1 == oneIdx) {
+                                consecutive = true;
+                            }
+                            oneCnt++;
+                        }
+                        mask >>= 1;
+                        oneIdx++;
+                    }
+                    if (oneCnt == 1) {
+                        assert(startPos >= 0);
+                        uint16_t code = (0b11 << 4) | (startPos);
+                        supply(code, 9, val, idx, compressed);
+                    } else if (consecutive && oneCnt == 2) {
+                        assert(startPos >= 0);
+                        uint16_t code = (0b10 << 4) | (startPos);
+                        supply(code, 9, val, idx, compressed);
+                    } else {
+                        uint16_t code = (0b1 << 15) | inputData[i];
+                        supply(code, 16, val, idx, compressed);
+                    }
+
+                }
+            }
+        }
+    }
+    if (cnt != 0) {
+        if (cnt == 1) {
+            uint16_t code = 0b001;
+            supply(code, 3, val, idx, compressed);
+        } else {
+            uint16_t code = (0b1 << 5) | (cnt - 2);
+            supply(code, 7, val, idx, compressed);
+        }
+    }
+    if (idx != 0) {
+        compressed.emplace_back(val);
+    }
+    return compressed;
+}
+
+
+/*
+    start from the compresseData[idx].ofs, retrieve the len length string of bits from the compresseData
+    compresseData[idx]: 0b_ _ _ _ _ _ _ _ 0b_ _ _ _ _ _ _ _
+                        0 1 2 3 4 5 6 7   0'1'2'3'4'5'6'7'
+    update the ofs and idx meanwhile
+*/
+uint16_t
+AbstractMemory::dismantle(int len, int& idx, int& ofs, const std::vector<uint8_t>& compresseData) {
+    uint16_t val = 0;
+    if (len == 16) {
+        ofs++;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+        len--;
+        assert(idx < compresseData.size());
+        while(len) {
+            if((len + ofs) > 8) {
+                int partLen = 8 - ofs;
+                len -= partLen;
+                val = val | ((compresseData[idx] & ((1 << partLen) - 1)) << len);
+                idx++;
+                ofs = 0;
+            } else {
+                ofs += len;
+                val = val | ((compresseData[idx] >> (8 - ofs)) & ((1 << len) - 1));
+                if (ofs >= 8) {
+                    ofs = 0;
+                    idx++;
+                }
+                break;
+            }
+        }
+    } else if (len == 7) {
+        ofs += 2;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+        len -= 2;
+        if ((len + ofs) > 8) {
+            int partLen = 8 - ofs;
+            len -= partLen;
+            val = val | ((compresseData[idx] & ((1 << partLen) - 1)) << len);
+            idx++;
+            ofs = len;
+            /* use the [0, len) for the rest part */
+            val = val | ((compresseData[idx] >> (8 - len)) & ((1 << len) - 1));
+        } else {
+            ofs += len;
+            val = (compresseData[idx] >> (8 - ofs)) & ((1 << len) - 1);
+            if (ofs >= 8) {
+                ofs -= 8;
+                idx++;
+            }
+        }
+        val = val + 2;
+    } else if (len == 3) {
+        val = 0;
+        ofs += 3;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+    } else if (len == 5) {
+        ofs += 4;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+        bool isAllOne = ((compresseData[idx] >> (7 - ofs) & 0x1) == 0x0);
+        if (isAllOne) {
+            val = (1 << 15) - 1;
+        } else {
+            val = 0;
+        }
+        ofs++;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+    } else {
+        assert(len == 9);
+        ofs += 4;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+        bool isConsecutive = ((compresseData[idx] >> (7 - ofs) & 0x1) == 0x0);
+        uint8_t startPos = 0;
+        ofs++;
+        if (ofs >= 8) {
+            ofs -= 8;
+            idx++;
+        }
+        len = 4;
+        if (ofs + len > 8) {
+            int partLen = 8 - ofs;
+            len -= partLen;
+
+            startPos = startPos | ((compresseData[idx] & ((1 << partLen) - 1)) << len);
+            idx++;
+            ofs = len;
+            /* use the [0, len) for the rest part */
+            startPos = startPos | ((compresseData[idx] >> (8 - len)) & ((1 << len) - 1));
+        } else {
+            ofs += len;
+            startPos = (compresseData[idx] >> (8 - ofs)) & ((1 << len) - 1);
+            if (ofs >= 8) {
+                ofs -= 8;
+                idx++;
+            }
+        }
+        if (isConsecutive) {
+            assert(startPos < 15);
+            val = 0b11 << (14 - startPos);
+        } else {
+            val = 0b1 << (15 - startPos);
+        }
+    }
+    return val;
+}
+
+bool
+AbstractMemory::checkStatus(const int& idx, const int& ofs, const std::vector<uint8_t>& compresseData) {
+    uint8_t sign = (compresseData[idx] >> (7 - ofs)) & 0x1;
+    return (sign == 0x1);
+}
+
+void
+AbstractMemory::interpret(int& idx, int& ofs, const std::vector<uint8_t>& compresseData, std::vector<uint16_t>& decompressed) {
+    bool isCompressed = checkStatus(idx, ofs, compresseData);
+    if (isCompressed) {
+        uint16_t val = dismantle(16, idx, ofs, compresseData);
+        decompressed.emplace_back(val);
+    } else {
+        int curIdx = idx;
+        int curOfs = ofs + 1;
+        if (curOfs >= 8) {
+            curOfs = 0;
+            curIdx++;
+        }
+        if (checkStatus(curIdx, curOfs, compresseData)){
+            uint16_t runLength = dismantle(7, idx, ofs, compresseData);
+            for (int i = 0; i < runLength; i++) {
+                decompressed.emplace_back(0);
+            }
+        } else {
+            curOfs++;
+            if (curOfs >= 8) {
+                curOfs = 0;
+                curIdx++;
+            }
+            if (checkStatus(curIdx, curOfs, compresseData)) {
+                uint16_t val = dismantle(3, idx, ofs, compresseData);
+                assert(val == 0);
+                decompressed.emplace_back(val);
+            } else {
+                curOfs++;
+                if (curOfs >= 8) {
+                    curOfs = 0;
+                    curIdx++;
+                }
+                if (checkStatus(curIdx, curOfs, compresseData)) {
+                    uint16_t val = dismantle(9, idx, ofs, compresseData);
+                    decompressed.emplace_back(val);
+                } else {
+                    uint16_t val = dismantle(5, idx, ofs, compresseData);
+                    if (val == 0) {
+                        assert(decompressed.size() != 0);
+                        val = decompressed.back();
+                    } else {
+                        assert(val == ((1 << 15) - 1));
+                    }
+                    decompressed.emplace_back(val);
+                }
+            }
+        }
+
+    }
+}
+
+std::vector<uint16_t>
+AbstractMemory::decompressC(const std::vector<uint8_t>& compresseData){
+    std::vector<uint16_t> decompressed;
+    int idx = 0;
+    int ofs = 0;
+    while (decompressed.size() < 33) {
+        interpret(idx, ofs, compresseData, decompressed);
+}
+assert(decompressed.size() == 33);
+return decompressed;
+}
+
+std::pair<bool, Addr>
+AbstractMemory::addressTranslation(const std::vector<uint8_t>& metaData, uint8_t index){
+    // printf("=============== enter addressTranslation ===================\n");
+    std::vector<uint8_t> sizeMap = {0, 8, 32, 64};
+
+    assert(metaData.size() == 64);
+    uint64_t origin_size = ((metaData[0] & (0x0F)) << 8) | metaData[1];
+    uint8_t valid_inflate_num = (metaData[63] & ((0b1 << 5) - 1));  // use last 5 bit to store the counter
+    assert(valid_inflate_num <= 17);
+    assert(origin_size + valid_inflate_num * 64 <= 4096);
+
+    Addr addr = 0;
+    bool in_inflate = false;
+    uint8_t loc = 0;
+
+    /* check the inflate room */
+    for (uint8_t i = 0; i < valid_inflate_num; i++) {
+        uint8_t iIdx = ((i * 6) / 8) + 50;
+        uint8_t iLoc = (i * 6) % 8;
+        uint8_t candi = 0;
+        if (iLoc > 2) {
+            int prefix = 8 - iLoc;
+            int suffix = 6 - prefix;
+            candi = (metaData[iIdx] & ((1 << prefix) - 1)) << suffix;
+            candi = candi | ((metaData[iIdx + 1] >> (8 - suffix)) & ((1 << suffix) - 1));
+        } else {
+            candi = (metaData[iIdx] >> (2 - iLoc)) & 0x3F;
+        }
+        if (candi == index) {
+            assert(in_inflate == false);
+            in_inflate = true;
+            loc = i;
+        }
+    }
+
+    // printf("if in inflate: %d: the loc is %d\n", in_inflate, loc);
+
+    uint64_t sumSize = 0;
+    if (in_inflate) {
+        sumSize = (((origin_size + 0x3F) >> 6) << 6) + loc * 64;
+    } else {
+        for (uint8_t u = 0; u < index; u++) {
+            uint8_t type = getType(metaData, u);
+            sumSize += sizeMap[type];
+        }
+    }
+    // printf("abstractMemory: sumSize: %d\n", sumSize);
+    uint8_t chunkIdx = sumSize / 512;
+
+    // printf("chunkIdx: %d\n", static_cast<unsigned int>(chunkIdx));
+
+    for (int u = 0; u < 4; u++){   // 4B per MPFN
+        addr = (addr << 8) | (metaData[2 + 4 * chunkIdx + u]);
+    }
+    addr = (addr << 9) | (sumSize & 0x1FF);
+
+    // printf("the generate addr is 0x%llx\n", addr);
+    return std::make_pair(in_inflate, addr);
+}
+
+void
+AbstractMemory::restoreData(std::vector<uint8_t>& cacheLine, uint8_t type) {
+    if (type == 0b00) {
+        for (int i = 0; i < cacheLine.size(); i++) {
+            cacheLine[i] = 0;
+        }
+    } else if (type == 0b10 || type == 0b01) {
+        decompress(cacheLine);
+    } else {
+        assert(type == 0b11);
+        /* do nothing */
+    }
+}
+
+
 
 } // namespace memory
 } // namespace gem5

@@ -831,6 +831,24 @@ DRAMInterface::isBusy(bool read_queue_empty, bool all_writes_nvm)
     return (busy_ranks == ranksPerChannel);
 }
 
+void DRAMInterface::atomicRead(uint8_t* ptr, Addr addr, size_t size) {
+    // printf("@dram interface   atomic Read\n");
+    assert(pmemAddr);
+    uint8_t *host_addr = toHostAddr(addr);
+    // printf("@dram interface   0x%lx\n", (uint64_t) host_addr);
+    std::memcpy(ptr, host_addr, size);
+}
+
+void DRAMInterface::atomicWrite(const std::vector<uint8_t>& data, Addr addr, size_t size, size_t base) {
+    // printf("@dram interface   atomic Write\n");
+    assert(pmemAddr);
+    uint8_t *host_addr = toHostAddr(addr);
+    // printf("@dram interface   0x%lx\n", (uint64_t) host_addr);
+    for (unsigned int i = 0; i < size; i++) {
+        host_addr[i] = data[base + i];
+    }
+}
+
 MemPacket*
 DRAMInterface::decodePacket(const PacketPtr pkt, Addr pkt_addr,
                        unsigned size, bool is_read, uint8_t pseudo_channel)

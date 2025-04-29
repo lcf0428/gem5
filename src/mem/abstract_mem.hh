@@ -350,6 +350,11 @@ class AbstractMemory : public ClockedObject
      */
     void access(PacketPtr pkt);
 
+    /*
+     * perform an untimed memory access specially for compresso
+     */
+    void accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer);
+
     /**
      * Perform an untimed memory read or write without changing
      * anything but the memory itself. No stats are affected by this
@@ -359,6 +364,65 @@ class AbstractMemory : public ClockedObject
      * @param pkt Packet performing the access
      */
     void functionalAccess(PacketPtr pkt);
+
+    /*
+     * perform a functional access specially for compresso
+     */
+
+    void comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer);
+
+
+    /* ====== special function for compresso ====== */
+    uint8_t getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
+
+    std::vector<uint8_t> compress(const std::vector<uint8_t>& cacheLine);
+
+    void decompress(std::vector<uint8_t>& data);
+
+    std::pair<uint64_t, std::vector<uint16_t>> BDXTransform(const std::vector<uint8_t>& origin);
+
+    std::vector<uint8_t> BDXRecover(const uint64_t& base, std::vector<uint16_t>& DBX);
+
+    void supply(uint16_t code, int len, uint8_t& val, int& idx, std::vector<uint8_t>& compressed);
+
+    std::vector<uint8_t> compressC(const std::vector<uint16_t>& inputData);
+
+    uint16_t dismantle(int len, int& idx, int& ofs, const std::vector<uint8_t>& compresseData);
+
+    bool checkStatus(const int& idx, const int& ofs, const std::vector<uint8_t>& compresseData);
+
+    void interpret(int& idx, int& ofs, const std::vector<uint8_t>& compresseData, std::vector<uint16_t>& decompressed);
+
+    std::vector<uint16_t> decompressC(const std::vector<uint8_t>& compresseData);
+
+    std::pair<bool, Addr> addressTranslation(const std::vector<uint8_t>& metaData, uint8_t index);
+
+    void restoreData(std::vector<uint8_t>& cacheLine, uint8_t type);
+
+    bool hasValidHostMem() { return pmemAddr; }
+
+    void verifyMetaData(uint8_t type, const std::vector<uint8_t>& cacheLine, size_t compressedSize) {
+        assert(cacheLine.size() == 64);
+        bool res = true;
+        if (type == 0) {
+            for (int i = 0; i < cacheLine.size(); i++) {
+                if (cacheLine[i] != 0) {
+                    res = false;
+                    break;
+                }
+            }
+            if (!res) {
+                panic("the cacheline is not all zero while the type is 0");
+            }
+        } else if (type == 1) {
+            assert(compressedSize <= 8);
+        } else if (type == 2) {
+            assert(compressedSize <= 32);
+        } else {
+            assert(compressedSize <= 64);
+        }
+    }
+    /* ====== end for compresso ======*/
 };
 
 } // namespace memory

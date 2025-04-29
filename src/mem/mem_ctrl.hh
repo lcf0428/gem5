@@ -276,6 +276,8 @@ class MemCtrl : public qos::MemCtrl
 
     };
 
+    std::string operationMode;
+
     /**
      * Our incoming port, for a multi-ported controller add a crossbar
      * in front of it
@@ -502,6 +504,156 @@ class MemCtrl : public qos::MemCtrl
 +    * Create pointer to interface of the actual memory media when connected
 +    */
     MemInterface* dram;
+
+    /**
+    * TODO: add some neccessary variables for compresso
+    */
+    typedef uint64_t PPN;
+
+    uint8_t globalPredictor;
+
+    std::list<uint64_t> freeList;   // The freelist of 256B block
+
+    /* ____________
+      |            |
+      |  metadata  |
+      |____________|
+      |  realdata  |
+    */
+    uint64_t realStartAddr;
+
+    struct ListNode {
+      ListNode(ListNode* p, ListNode* s): prev(p), succ(s), addr(0), cacheLine(std::vector<uint8_t>(64)) {}
+      ListNode (ListNode* p, ListNode* s, Addr addr, const std::vector<uint8_t>& val): prev(p), succ(s), addr(addr), cacheLine(std::vector<uint8_t>(64)) {
+        assert(val.size() == 64);
+        for (int i = 0; i < 64; i++) {
+          cacheLine[i] = val[i];
+        }
+      }
+      inline void increaseCnt() { cnt = std::min(cnt + 1, 3); }
+
+      inline void decreaseCnt() { cnt = (cnt > 0)?(cnt - 1):cnt; }
+
+      ListNode* prev;
+      ListNode* succ;
+      Addr addr;
+      uint8_t cnt;  // a 2-bit counter associate with a mcache entry
+      std::vector<uint8_t> cacheLine;
+    };
+
+    class MetaCache {
+      public:
+        MetaCache(uint16_t cap = 64): _sz(0), _capacity(cap) {
+          header = new ListNode(nullptr, nullptr);
+          tailer = new ListNode(header, nullptr);
+          header->succ = tailer;
+        }
+
+        int getSize() {
+          return _sz;
+        }
+
+        std::vector<uint8_t> find(const Addr& addr) {
+          // printf("@mcache find: addr : 0x%lx\n", addr);
+          // printf("@mcache hmap.size(): %ld\n", hmap.size());
+          // for (auto kv: hmap) {
+          //   printf("@mcache k: 0x%lx\n", kv.first);
+          // }
+          if (hmap.count(addr) == 0) {
+            std::vector<uint8_t> res(64, 0);
+            return res;
+          }
+          ListNode* cur = hmap[addr];
+          update(cur);
+          return cur->cacheLine;
+        }
+
+        void add(const Addr& addr, const std::vector<uint8_t>& val) {
+          // printf("@mcache  the addr is 0x%lx, current size of cache is: %d\n", addr, _sz);
+          // printf("@mcache the capacity of cache is %d\n", _capacity);
+          assert(val.size() == 64);
+          if (hmap.count(addr) != 0) {
+            ListNode* cur = hmap[addr];
+            cur->cacheLine = val;
+            update(cur);
+          } else {
+            ListNode* cur = new ListNode (nullptr, nullptr, addr, val);
+            // printf("@mcache  not hit in cache, a new entry will be added\n");
+            insertAfterHeader(cur);
+            hmap[addr] = cur;
+            _sz++;
+            if (_sz > _capacity) {
+              // printf("@mcache the mcache is full, need to evict a victim, current size is %d\n", _sz);
+              remove();
+              // printf("@mcache after the eviction, current size is %d\n", _sz);
+            }
+          }
+        }
+
+        void updateIfExist(const Addr& addr, const std::vector<uint8_t>& val) {
+          if (hmap.count(addr) != 0) {
+            hmap[addr]->cacheLine = val;
+          }
+          return;
+        }
+
+        bool isExist(const Addr& addr) {
+          return (hmap.count(addr) != 0);
+        }
+
+      private:
+        void update(ListNode* node) {
+          node->prev->succ = node->succ;
+          node->succ->prev = node->prev;
+          insertAfterHeader(node);
+        }
+
+        void insertAfterHeader(ListNode* node) {
+          ListNode* tmp = header->succ;
+          header->succ = node;
+          node->prev = header;
+          node->succ = tmp;
+          tmp->prev = node;
+        }
+
+        void remove() {
+          ListNode* target = tailer->prev;
+          assert (target != header);
+          target->prev->succ = tailer;
+          tailer->prev = target->prev;
+          Addr addr = target->addr;
+          hmap.erase(addr);
+          delete target;
+          _sz--;
+        }
+
+        ListNode* header;
+        ListNode* tailer;
+        std::unordered_map<Addr, ListNode*> hmap;
+        uint16_t _sz;
+        uint16_t _capacity;
+    };
+
+    MetaCache mcache;
+
+    /*
+      Once receving a request, first add to the candidate queue
+      After get the information about the real physical address
+      Perform the address transformation and add to the read/write queue
+    */
+
+    std::vector<uint8_t> sizeMap;
+
+    bool hasBuffered;
+
+    PPN pageNum;
+
+    std::vector<uint8_t> mPageBuffer;
+
+    std::vector<uint8_t> pageBuffer;
+
+    uint64_t expectReadQueueSize;
+    uint64_t expectWriteQueueSize;
 
     virtual AddrRangeList getAddrRanges();
 
@@ -789,7 +941,72 @@ class MemCtrl : public qos::MemCtrl
     virtual bool recvTimingReq(PacketPtr pkt);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
+    bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
+
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
+    Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
+
+    /* ====== useful functions for compresso implementation =====*/
+    uint8_t getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
+
+    void setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type);
+
+    inline bool isValidMetaData(const std::vector<uint8_t>& metaData) { return (metaData[0] >= 0x80); }
+
+    void initialPageBuffer(const PPN& ppn);
+
+    void restoreData(std::vector<uint8_t>& cacheLine, uint8_t type);
+
+    void updateCacheLine(std::vector<uint8_t>& cacheLine, PacketPtr pkt, const Addr& addr);
+
+    inline bool isAllZero(const std::vector<uint8_t>& cacheLine) {
+      assert(cacheLine.size() == 64);
+      bool res = true;
+      for (int i = 0; i < cacheLine.size(); i++) {
+        if (cacheLine[i] != 0) {
+          res = false;
+          break;
+        }
+      }
+      return res;
+    }
+
+    std::pair<bool, Addr> addressTranslation(const std::vector<uint8_t>& metaData, uint8_t index);
+
+    bool hasFreeInflateRoom(const std::vector<uint8_t>& metaData);
+
+    Addr allocateInflateRoom(std::vector<uint8_t>& metaData, const uint8_t& index);
+
+    Addr moveForwardAtomic(std::vector<uint8_t>& metaData, const uint8_t& index, MemInterface* mem_intr);
+
+    bool updateMetaData(std::vector<uint8_t>& compressed, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx, bool inInflateRoom, MemInterface* mem_intr);
+
+    void recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uint8_t cacheLineIdx, std::vector<uint8_t>& metaData, MemInterface* mem_intr);
+
+    std::vector<uint8_t> compress(const std::vector<uint8_t>& cacheLine);
+
+    void decompress(std::vector<uint8_t>& data);
+
+    std::pair<uint64_t, std::vector<uint16_t>> BDXTransform(const std::vector<uint8_t>& origin);
+
+    std::vector<uint8_t> BDXRecover(const uint64_t& base, std::vector<uint16_t>& DBX);
+
+    void supply(uint16_t code, int len, uint8_t& val, int& idx, std::vector<uint8_t>& compressed);
+
+    std::vector<uint8_t> compressC(const std::vector<uint16_t>& inputData);
+
+    uint16_t dismantle(int len, int& idx, int& ofs, const std::vector<uint8_t>& compresseData);
+
+    bool checkStatus(const int& idx, const int& ofs, const std::vector<uint8_t>& compresseData);
+
+    void interpret(int& idx, int& ofs, const std::vector<uint8_t>& compresseData, std::vector<uint16_t>& decompressed);
+
+    std::vector<uint16_t> decompressC(const std::vector<uint8_t>& compresseData);
+
+    void setInflateEntry(uint8_t index, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx);
+
+    uint8_t getInflateEntry(uint8_t index, const std::vector<uint8_t>& metaData);
+    /* ====== end for compreeso ====== */
 
 };
 
