@@ -296,6 +296,7 @@ class Packet : public Printable, public Extensible<Packet>
   public:
     typedef uint32_t FlagsType;
     typedef gem5::Flags<FlagsType> Flags;
+    typedef uint32_t PacketType;
 
   private:
     enum : FlagsType
@@ -545,14 +546,28 @@ class Packet : public Printable, public Extensible<Packet>
     SenderState *senderState;
 
     /* ===== special for compresso ===== */
+    enum : PacketType
+    {
+        regular                 = 0x00000001,
+        readMetaData            = 0x00000002,
+        writeMetaData           = 0x00000004,
+        readForCompress         = 0x00000008,
+        writeForCompress        = 0x00000010
+    };
+
+
     /// enable encaptulate
     PacketPtr comprBackup;
 
     std::unordered_map<uint64_t, std::vector<uint8_t>> comprMetaDataMap;  /* metaDataMap[PPN] -> get metadata */
 
-    std::unordered_map<uint64_t, uint8_t> comprSubPacketStatus;
-
     uint64_t comprEntryCnt;
+
+    PacketType comprPType;
+
+    Tick comprTick;
+
+    bool comprIsReady;
     /* ===== end for compresso ===== */
 
     /**
@@ -893,7 +908,8 @@ class Packet : public Printable, public Extensible<Packet>
            htmTransactionUid(0),
            headerDelay(0), snoopDelay(0),
            payloadDelay(0), senderState(NULL),
-           comprBackup(nullptr)
+           comprBackup(nullptr), comprPType(regular),
+           comprIsReady(false)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -935,7 +951,8 @@ class Packet : public Printable, public Extensible<Packet>
            htmTransactionUid(0),
            headerDelay(0),
            snoopDelay(0), payloadDelay(0), senderState(NULL),
-           comprBackup(nullptr)
+           comprBackup(nullptr), comprPType(regular),
+           comprIsReady(false)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -967,7 +984,8 @@ class Packet : public Printable, public Extensible<Packet>
            snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
            senderState(pkt->senderState),
-           comprBackup(nullptr)
+           comprBackup(nullptr), comprPType(regular),
+           comprIsReady(false)
     {
         if (!clear_flags)
             flags.set(pkt->flags & COPY_FLAGS);
@@ -1004,7 +1022,7 @@ class Packet : public Printable, public Extensible<Packet>
     /*
      *  alternate constructor specially for MC
      */
-    Packet(const PacketPtr pkt)
+    Packet(const PacketPtr pkt, Tick tick = 0, uint64_t entryCnt = 0)
     :  Extensible<Packet>(*pkt),
         cmd(pkt->cmd), id(pkt->id), req(pkt->req),
         data(nullptr),
@@ -1017,7 +1035,11 @@ class Packet : public Printable, public Extensible<Packet>
         snoopDelay(0),
         payloadDelay(pkt->payloadDelay),
         senderState(pkt->senderState),
-        comprBackup(pkt)
+        comprBackup(pkt),
+        comprEntryCnt(entryCnt),
+        comprPType(regular),
+        comprTick(tick),
+        comprIsReady(false)
     {
         flags.set(pkt->flags & COPY_FLAGS);
 
@@ -1642,6 +1664,77 @@ class Packet : public Printable, public Extensible<Packet>
     void allocateForMC() {
         deleteData();
         allocate();
+    }
+
+    void setEntryCnt(uint64_t entry_cnt) {
+        comprEntryCnt = entry_cnt;
+    }
+
+    bool IncreEntryCnt() {
+        uint64_t pageCnt = comprMetaDataMap.size();
+        assert(comprEntryCnt < pageCnt);
+        comprEntryCnt++;
+        if (comprEntryCnt == pageCnt) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    void setPType(uint32_t packet_type) {
+        comprPType = packet_type;
+    }
+
+    uint32_t getPType() {
+        return comprPType;
+    }
+
+    void setReadCmd() { cmd = MemCmd::ReadReq; }
+
+    void setWriteCmd() { cmd = MemCmd::WriteReq; }
+
+    void configAsReadM(Addr meta_addr) {
+        setPType(readMetaData);
+        setSizeForMC();
+        allocateForMC();
+        setAddr(meta_addr);
+        setReadCmd();
+    }
+
+    void configAsWriteM(const std::vector<uint8_t>& metaData, uint64_t ppn) {
+        Addr meta_addr = ppn * 64;
+        
+        setPType(writeMetaData);
+        setSizeForMC();
+        allocateForMC();
+        setAddr(meta_addr);
+        setDataForMC(metaData.data(), 0, 64);
+        setWriteCmd();
+    }
+
+    void configAsReadForCompress(std::vector<uint8_t>& metaData, uint64_t ppn) {
+        setPType(readForCompress);
+        setSizeForMC(4096);
+        allocateForMC();
+        setAddr(ppn << 12);
+        setReadCmd();
+        comprMetaDataMap[ppn] = metaData;
+    }
+
+    void configAsWriteForCompress(uint8_t* page, uint64_t ppn) {
+        setPType(writeForCompress);
+        setSizeForMC(4096);
+        allocateForMC();
+        setAddr(ppn << 12);
+        setWriteCmd();
+
+        setDataForMC(page, 0, 4096);
+
+
+    }
+
+    bool operator<(const Packet& other) const {
+        return comprTick < other.comprTick;
     }
 };
 

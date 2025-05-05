@@ -449,12 +449,12 @@ AbstractMemory::access(PacketPtr pkt)
             pkt->setData(host_addr);
         }
 
-        printf("Atomic read marker: ");
+        // printf("Atomic read marker: ");
         uint8_t* start = pkt->getPtr<uint8_t>();
-        for (int ts = 0; ts < pkt->getSize(); ts++) {
-           printf("%02x ", static_cast<unsigned int>(start[ts]));
-        }
-        printf("\n");
+        // for (int ts = 0; ts < pkt->getSize(); ts++) {
+        //    printf("%02x ", static_cast<unsigned int>(start[ts]));
+        // }
+        // printf("\n");
 
         TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
         if (collectStats) {
@@ -474,12 +474,12 @@ AbstractMemory::access(PacketPtr pkt)
         if (writeOK(pkt)) {
             if (pmemAddr) {
 
-                printf("Atomic write marker: ");
-                uint8_t* start = pkt->getPtr<uint8_t>();
-                for (int ts = 0; ts < pkt->getSize(); ts++) {
-                   printf("%02x ", static_cast<unsigned int>(start[ts]));
-                }
-                printf("\n");
+                // printf("Atomic write marker: ");
+                // uint8_t* start = pkt->getPtr<uint8_t>();
+                // for (int ts = 0; ts < pkt->getSize(); ts++) {
+                //    printf("%02x ", static_cast<unsigned int>(start[ts]));
+                // }
+                // printf("\n");
 
                 pkt->writeData(host_addr);
                 DPRINTF(MemoryAccess, "%s write due to %s\n",
@@ -710,12 +710,12 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
             addr = (addr | (burst_size - 1)) + 1;
         }
 
-        printf("Atomic read marker: ");
-        uint8_t* start = pkt->getPtr<uint8_t>();
-        for (int ts = 0; ts < pkt->getSize(); ts++) {
-           printf("%02x ", static_cast<unsigned int>(start[ts]));
-        }
-        printf("\n");
+        // printf("Atomic read marker: ");
+        // uint8_t* start = pkt->getPtr<uint8_t>();
+        // for (int ts = 0; ts < pkt->getSize(); ts++) {
+        //    printf("%02x ", static_cast<unsigned int>(start[ts]));
+        // }
+        // printf("\n");
 
         TRACE_PACKET(real_recv_pkt->req->isInstFetch() ? "IFetch" : "Read");
         if (collectStats) {
@@ -739,12 +739,12 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
             assert((size & (burst_size - 1)) == 0);
             assert(pkt_count == (size / burst_size));
 
-            printf("Atomic write marker: ");
-            uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
-            for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
-               printf("%02x ", static_cast<unsigned int>(start[ts]));
-            }
-            printf("\n");
+            // printf("Atomic write marker: ");
+            // uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+            // for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+            //    printf("%02x ", static_cast<unsigned int>(start[ts]));
+            // }
+            // printf("\n");
 
             for (unsigned int i = 0; i < pkt_count; i++) {
                 uint64_t ppn = addr >> 12;
@@ -875,11 +875,11 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
         }
 
         uint8_t* test_start = pkt->getPtr<uint8_t>();
-        printf("Functional read: ");
-        for (int u = 0; u < pkt->getSize(); u++) {
-            printf("%02x ", static_cast<unsigned int>(test_start[u]));
-        }
-        printf("\n");
+        // printf("Functional read: ");
+        // for (int u = 0; u < pkt->getSize(); u++) {
+        //     printf("%02x ", static_cast<unsigned int>(test_start[u]));
+        // }
+        // printf("\n");
 
         TRACE_PACKET("Read");
         pkt->makeResponse();
@@ -888,12 +888,12 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
             pkt->writeData(host_addr);
         }
 
-        printf("Functional write: ");
-        uint8_t* test_start = pkt->getPtr<uint8_t>();
-        for (int i = 0; i < pkt->getSize(); i++) {
-            printf("%02x ", static_cast<unsigned int>(test_start[i]));
-        }
-        printf("\n");
+        // printf("Functional write: ");
+        // uint8_t* test_start = pkt->getPtr<uint8_t>();
+        // for (int i = 0; i < pkt->getSize(); i++) {
+        //     printf("%02x ", static_cast<unsigned int>(test_start[i]));
+        // }
+        // printf("\n");
 
         TRACE_PACKET("Write");
         pkt->makeResponse();
@@ -1018,12 +1018,12 @@ AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64
             addr = (addr | (burst_size - 1)) + 1;
         }
 
-        printf("Functional read: ");
-        uint8_t* start = pkt->getPtr<uint8_t>();
-        for (int ts = 0; ts < pkt->getSize(); ts++) {
-           printf("%02x ", static_cast<unsigned int>(start[ts]));
-        }
-        printf("\n");
+        // printf("Functional read: ");
+        // uint8_t* start = pkt->getPtr<uint8_t>();
+        // for (int ts = 0; ts < pkt->getSize(); ts++) {
+        //    printf("%02x ", static_cast<unsigned int>(start[ts]));
+        // }
+        // printf("\n");
 
         TRACE_PACKET("Read");
         real_recv_pkt->makeResponse();
@@ -1032,12 +1032,12 @@ AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64
         assert(offset == 0);
         assert((size & (burst_size - 1)) == 0);
         assert(pkt_count == (size / burst_size));
-        printf("Functional write: ");
-        uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
-        for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
-           printf("%02x ", static_cast<unsigned int>(start[ts]));
-        }
-        printf("\n");
+        // printf("Functional write: ");
+        // uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+        // for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+        //    printf("%02x ", static_cast<unsigned int>(start[ts]));
+        // }
+        // printf("\n");
 
         for (unsigned int i = 0; i < pkt_count; i++) {
             uint64_t ppn = addr >> 12;

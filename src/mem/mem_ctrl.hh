@@ -81,7 +81,7 @@ class BurstHelper
   public:
 
     /** Number of bursts requred for a system packet **/
-    const unsigned int burstCount;
+    unsigned int burstCount;
 
     /** Number of bursts serviced so far for a system packet **/
     unsigned int burstsServiced;
@@ -348,6 +348,9 @@ class MemCtrl : public qos::MemCtrl
     bool addToReadQueue(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
+    bool addToReadQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
+                        MemInterface* mem_intr);
+  
     /**
      * Decode the incoming pkt, create a mem_pkt and push to the
      * back of the write queue. \If the write q length is more than
@@ -360,6 +363,9 @@ class MemCtrl : public qos::MemCtrl
      * eventually go to
      */
     void addToWriteQueue(PacketPtr pkt, unsigned int pkt_count,
+                         MemInterface* mem_intr);
+
+    bool addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                          MemInterface* mem_intr);
 
     /**
@@ -384,6 +390,9 @@ class MemCtrl : public qos::MemCtrl
      * @param mem_intr the memory interface to access
      */
     virtual void accessAndRespond(PacketPtr pkt, Tick static_latency,
+                                                MemInterface* mem_intr);
+
+    virtual void accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
 
     /**
@@ -652,8 +661,27 @@ class MemCtrl : public qos::MemCtrl
 
     std::vector<uint8_t> pageBuffer;
 
-    uint64_t expectReadQueueSize;
-    uint64_t expectWriteQueueSize;
+    std::vector<PacketPtr> readCandiQueue;
+
+    std::vector<PacketPtr> writeCandiQueue;
+
+    std::vector<PacketPtr> blockPktQueue;
+
+    std::set<PacketPtr> waitQueue;
+
+    uint32_t curReadNum;
+
+    uint32_t curWriteNum;
+
+    uint32_t blockedNum;
+
+    uint32_t readBufferSizeForCompr;
+
+    uint32_t writeBufferSizeForCompr;
+
+    bool blockedForCompr;
+
+
 
     virtual AddrRangeList getAddrRanges();
 
@@ -939,6 +967,8 @@ class MemCtrl : public qos::MemCtrl
     virtual void recvMemBackdoorReq(const MemBackdoorReq &req,
             MemBackdoorPtr &backdoor);
     virtual bool recvTimingReq(PacketPtr pkt);
+    bool recvTimingReqLogic(PacketPtr pkt);
+    bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
@@ -1006,7 +1036,15 @@ class MemCtrl : public qos::MemCtrl
     void setInflateEntry(uint8_t index, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx);
 
     uint8_t getInflateEntry(uint8_t index, const std::vector<uint8_t>& metaData);
-    /* ====== end for compreeso ====== */
+
+    bool isEligible(PacketPtr pkt, bool ignoreRead = false);
+
+    bool hasOverLap(std::unordered_map<uint64_t, std::vector<uint8_t>>& map1, std::unordered_map<uint64_t, std::vector<uint8_t>>& map2);
+
+    std::vector<uint8_t> recompressTiming(PacketPtr writeForCompress);
+
+    void updateSubseqMetaData(PacketPtr pkt, PPN ppn);
+    /* ====== end for compresso ====== */
 
 };
 
