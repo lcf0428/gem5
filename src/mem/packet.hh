@@ -1703,7 +1703,7 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsWriteM(const std::vector<uint8_t>& metaData, uint64_t ppn) {
         Addr meta_addr = ppn * 64;
-        
+
         setPType(writeMetaData);
         setSizeForMC();
         allocateForMC();

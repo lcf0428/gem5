@@ -422,6 +422,22 @@ class AbstractMemory : public ClockedObject
             assert(compressedSize <= 64);
         }
     }
+ 
+    inline bool isAllZero(const std::vector<uint8_t>& cacheLine) {
+        assert(cacheLine.size() == 64);
+        bool res = true;
+        for (int i = 0; i < cacheLine.size(); i++) {
+          if (cacheLine[i] != 0) {
+            res = false;
+            break;
+          }
+        }
+        return res;
+    }
+
+    void setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type);
+
+
     /* ====== end for compresso ======*/
 };
 

@@ -350,7 +350,7 @@ class MemCtrl : public qos::MemCtrl
 
     bool addToReadQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
-  
+
     /**
      * Decode the incoming pkt, create a mem_pkt and push to the
      * back of the write queue. \If the write q length is more than
@@ -579,7 +579,14 @@ class MemCtrl : public qos::MemCtrl
 
         void add(const Addr& addr, const std::vector<uint8_t>& val) {
           // printf("@mcache  the addr is 0x%lx, current size of cache is: %d\n", addr, _sz);
+          // printf("the metadata is :\n");
+          for (int k = 0; k < 64; k++) {
+              printf("%02x",static_cast<unsigned>(val[k]));
+
+          }
+          printf("\n");
           // printf("@mcache the capacity of cache is %d\n", _capacity);
+          
           assert(val.size() == 64);
           if (hmap.count(addr) != 0) {
             ListNode* cur = hmap[addr];
@@ -680,8 +687,6 @@ class MemCtrl : public qos::MemCtrl
     uint32_t writeBufferSizeForCompr;
 
     bool blockedForCompr;
-
-
 
     virtual AddrRangeList getAddrRanges();
 
