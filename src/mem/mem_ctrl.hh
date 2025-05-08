@@ -674,7 +674,13 @@ class MemCtrl : public qos::MemCtrl
 
     std::vector<PacketPtr> blockPktQueue;
 
-    std::set<PacketPtr> waitQueue;
+    struct compareByTick {
+      bool operator()(const PacketPtr a, const PacketPtr b) const {
+        return a->comprTick < b->comprTick;
+      }
+    };
+
+    std::set<PacketPtr, compareByTick> waitQueue;
 
     uint32_t curReadNum;
 
@@ -1049,6 +1055,12 @@ class MemCtrl : public qos::MemCtrl
     std::vector<uint8_t> recompressTiming(PacketPtr writeForCompress);
 
     void updateSubseqMetaData(PacketPtr pkt, PPN ppn);
+
+    void checkForReadyPkt();
+
+    void prepareMetaData(PacketPtr pkt);
+
+    void assignToQueue(PacketPtr pkt, bool recordStats = false);
     /* ====== end for compresso ====== */
 
 };

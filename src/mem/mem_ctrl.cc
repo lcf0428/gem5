@@ -276,6 +276,7 @@ MemCtrl::recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                     while (cur < compressedPage.size()) {
                         assert(freeList.size() > 0);
                         Addr chunkAddr = freeList.front();
+                        DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
                         freeList.pop_front();
 
                         int chunkIdx = cur / 512;
@@ -836,7 +837,7 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
 
     unsigned extraAccess = 0;
 
-    if (pkt->getPType() == 0x2) {
+    if (pkt->getPType() == 0x4) {
         // readMetaData pkt, the address is already in MPA
         assert(pkt_count == 1);
         unsigned size = pkt->getSize();
@@ -865,16 +866,9 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
 
         std::vector<uint8_t> metaData(64, 0);
 
-        /* read the metadata at this moment */
-        mem_intr->atomicRead(metaData.data(), addr, 64);
-        printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, addr / 64, addr);
-        mcache.add(addr, metaData);
-
         // If not found in the write q, make a memory packet and
         // push it onto the read queue
         if (!foundInWrQ) {
-            pkt->setDataForMC(metaData.data(), 0, 64);
-
             MemPacket* mem_pkt;
             mem_pkt = mem_intr->decodePacket(pkt, addr, size, true,
                                                     mem_intr->pseudoChannel);
@@ -898,59 +892,14 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
 
             return false;
         } else {
-            PacketPtr auxPkt = pkt->comprBackup;
-            assert(auxPkt);
-            PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-            assert(auxPkt->comprMetaDataMap.find(ppn) != auxPkt->comprMetaDataMap.end());
-            auxPkt->comprMetaDataMap[ppn] = metaData;
-
-            size = auxPkt->getSize();
-            assert(size == auxPkt->comprBackup->getSize());
-            unsigned offset = auxPkt->getAddr() & (burst_size - 1);
-            pkt_count = divCeil(offset + auxPkt->getSize(), burst_size);
-
-            if (auxPkt->IncreEntryCnt()) {
-                auxPkt->comprIsReady = true;
-                /* auxPkt is ready for process */
-                if (auxPkt->isWrite()) {
-                    DPRINTF(MemCtrl, "Line %d, enter the addToWriteQueueForCompr function\n", __LINE__);
-                    if (addToWriteQueueForCompr(auxPkt, pkt_count, dram)) {
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    stats.writeReqs++;
-                    stats.bytesWrittenSys += size;
-                } else {
-                    assert(pkt->isRead());
-                    if (!addToReadQueueForCompr(auxPkt, pkt_count, dram)) {
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    stats.readReqs++;
-                    stats.bytesReadSys += size;
-                }
-            }
-            delete pkt;
+            accessAndRespondForCompr(pkt, frontendLatency, mem_intr);
             return true;
         }
     }
 
     /* else the pkt is auxPkt or readForCompress */
-    if (!isEligible(pkt, true)) {
-        /* wait for next try */
-        return true;
-    }
 
-    if (pkt->getPType() == 0x1) {
+    if (pkt->getPType() == 0x2) {
         /* pkt is auxPkt */
         for (int cnt = 0; cnt < pkt_count; ++cnt) {
             unsigned size = std::min((addr | (burst_size - 1)) + 1,
@@ -982,29 +931,97 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
                 real_addr = cLStatus.second;
                 real_size = (inInflate)?64:sizeMap[type];
 
-                Addr end_addr = real_addr + real_size - 1;
-                uint8_t burstN = (end_addr / burst_size) - (real_addr / burst_size) + 1;
-                assert(burstN <= 2);
-                if (burstN > 1) {
-                    crossBoundary = true;
-                }
-
-                stats.readBursts += burstN;
-                stats.requestorReadAccesses[pkt->requestorId()] += burstN;
-
-                if (crossBoundary) {
-                    extraAccess++;
-                    unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
-                    assert(prefix < real_size);
-                    unsigned suffix = real_size - prefix;
-                    std::vector<unsigned> memPktLen = {prefix, suffix};
-                    std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
-
-                    for (unsigned int j = 0; j < 2; j++) {
+                if (real_size == 0) {
+                    stats.readBursts++;
+                    stats.requestorReadAccesses[pkt->requestorId()]++;
+                    pktsServicedByPageBuffer++;
+                } else {
+                    Addr end_addr = real_addr + real_size - 1;
+                    uint8_t burstN = (end_addr / burst_size) - (real_addr / burst_size) + 1;
+                    assert(burstN <= 2);
+                    if (burstN > 1) {
+                        crossBoundary = true;
+                    }
+    
+                    stats.readBursts += burstN;
+                    stats.requestorReadAccesses[pkt->requestorId()] += burstN;
+    
+                    if (crossBoundary) {
+                        extraAccess++;
+                        unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
+                        assert(prefix < real_size);
+                        unsigned suffix = real_size - prefix;
+                        std::vector<unsigned> memPktLen = {prefix, suffix};
+                        std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
+    
+                        for (unsigned int j = 0; j < 2; j++) {
+                            // First check write buffer to see if the data is already at
+                            // the controller
+                            bool foundInWrQ = false;
+                            Addr burst_addr = burstAlign(memPktAddr[j], mem_intr);
+                            // if the burst address is not present then there is no need
+                            // looking any further
+                            if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
+                                for (const auto& vec : writeQueue) {
+                                    for (const auto& p : vec) {
+                                        // check if the read is subsumed in the write queue
+                                        // packet we are looking at
+                                        if (p->addr <= memPktAddr[j] &&
+                                            ((memPktAddr[j] + memPktLen[j]) <= (p->addr + p->size))) {
+    
+                                            foundInWrQ = true;
+                                            stats.servicedByWrQ++;
+                                            pktsServicedByWrQ++;
+                                            DPRINTF(MemCtrl,
+                                                    "Read to addr %#x with size %d serviced by "
+                                                    "write queue\n",
+                                                    addr, size);
+                                            stats.bytesReadWrQ += burst_size;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+    
+                            if (!foundInWrQ) {
+                                // Make the burst helper for split packets
+                                if (burst_helper == NULL) {
+                                    DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
+                                            "memory requests\n", pkt->getAddr(), pkt_count);
+                                    burst_helper = new BurstHelper(pkt_count);
+                                }
+                                MemPacket* mem_pkt;
+                                mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], true,
+                                                                        mem_intr->pseudoChannel);
+    
+                                // Increment read entries of the rank (dram)
+                                // Increment count to trigger issue of non-deterministic read (nvm)
+                                mem_intr->setupRank(mem_pkt->rank, true);
+                                // Default readyTime to Max; will be reset once read is issued
+                                mem_pkt->readyTime = MaxTick;
+                                mem_pkt->burstHelper = burst_helper;
+    
+                                // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
+    
+                                DPRINTF(MemCtrl, "Compr: Adding to read queue\n");
+    
+                                readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
+    
+                                // log packet
+                                logRequest(MemCtrl::READ, pkt->requestorId(),
+                                        pkt->qosValue(), mem_pkt->addr, 1);
+    
+                                mem_intr->readQueueSize++;
+    
+                                // Update stats
+                                stats.avgRdQLen = totalReadQueueSize + respQueue.size();
+                            }
+                        }
+                    } else {
                         // First check write buffer to see if the data is already at
                         // the controller
                         bool foundInWrQ = false;
-                        Addr burst_addr = burstAlign(memPktAddr[j], mem_intr);
+                        Addr burst_addr = burstAlign(real_addr, mem_intr);
                         // if the burst address is not present then there is no need
                         // looking any further
                         if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
@@ -1012,9 +1029,9 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
                                 for (const auto& p : vec) {
                                     // check if the read is subsumed in the write queue
                                     // packet we are looking at
-                                    if (p->addr <= memPktAddr[j] &&
-                                        ((memPktAddr[j] + memPktLen[j]) <= (p->addr + p->size))) {
-
+                                    if (p->addr <= real_addr &&
+                                       ((real_addr + real_size) <= (p->addr + p->size))) {
+    
                                         foundInWrQ = true;
                                         stats.servicedByWrQ++;
                                         pktsServicedByWrQ++;
@@ -1028,111 +1045,49 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
                                 }
                             }
                         }
-
+    
+                        // If not found in the write q, make a memory packet and
+                        // push it onto the read queue
                         if (!foundInWrQ) {
                             // Make the burst helper for split packets
-                            if (burst_helper == NULL) {
+                            if (pkt_count > 1 && burst_helper == NULL) {
                                 DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
                                         "memory requests\n", pkt->getAddr(), pkt_count);
                                 burst_helper = new BurstHelper(pkt_count);
                             }
                             MemPacket* mem_pkt;
-                            mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], true,
+                            mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, true,
                                                                     mem_intr->pseudoChannel);
-
+    
                             // Increment read entries of the rank (dram)
                             // Increment count to trigger issue of non-deterministic read (nvm)
                             mem_intr->setupRank(mem_pkt->rank, true);
                             // Default readyTime to Max; will be reset once read is issued
                             mem_pkt->readyTime = MaxTick;
                             mem_pkt->burstHelper = burst_helper;
-
+    
                             // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
-
-                            DPRINTF(MemCtrl, "Compr: Adding to read queue\n");
-
+    
+                            DPRINTF(MemCtrl, "Adding to read queue\n");
+    
                             readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
+    
                             // log packet
                             logRequest(MemCtrl::READ, pkt->requestorId(),
                                     pkt->qosValue(), mem_pkt->addr, 1);
-
+    
                             mem_intr->readQueueSize++;
-
+    
                             // Update stats
                             stats.avgRdQLen = totalReadQueueSize + respQueue.size();
                         }
-                    }
-                } else {
-                    // First check write buffer to see if the data is already at
-                    // the controller
-                    bool foundInWrQ = false;
-                    Addr burst_addr = burstAlign(real_addr, mem_intr);
-                    // if the burst address is not present then there is no need
-                    // looking any further
-                    if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
-                        for (const auto& vec : writeQueue) {
-                            for (const auto& p : vec) {
-                                // check if the read is subsumed in the write queue
-                                // packet we are looking at
-                                if (p->addr <= real_addr &&
-                                   ((real_addr + real_size) <= (p->addr + p->size))) {
-
-                                    foundInWrQ = true;
-                                    stats.servicedByWrQ++;
-                                    pktsServicedByWrQ++;
-                                    DPRINTF(MemCtrl,
-                                            "Read to addr %#x with size %d serviced by "
-                                            "write queue\n",
-                                            addr, size);
-                                    stats.bytesReadWrQ += burst_size;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // If not found in the write q, make a memory packet and
-                    // push it onto the read queue
-                    if (!foundInWrQ) {
-                        // Make the burst helper for split packets
-                        if (pkt_count > 1 && burst_helper == NULL) {
-                            DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
-                                    "memory requests\n", pkt->getAddr(), pkt_count);
-                            burst_helper = new BurstHelper(pkt_count);
-                        }
-                        MemPacket* mem_pkt;
-                        mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, true,
-                                                                mem_intr->pseudoChannel);
-
-                        // Increment read entries of the rank (dram)
-                        // Increment count to trigger issue of non-deterministic read (nvm)
-                        mem_intr->setupRank(mem_pkt->rank, true);
-                        // Default readyTime to Max; will be reset once read is issued
-                        mem_pkt->readyTime = MaxTick;
-                        mem_pkt->burstHelper = burst_helper;
-
-                        // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
-
-                        DPRINTF(MemCtrl, "Adding to read queue\n");
-
-                        readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
-                        // log packet
-                        logRequest(MemCtrl::READ, pkt->requestorId(),
-                                pkt->qosValue(), mem_pkt->addr, 1);
-
-                        mem_intr->readQueueSize++;
-
-                        // Update stats
-                        stats.avgRdQLen = totalReadQueueSize + respQueue.size();
                     }
                 }
             }
             // Starting address of next memory pkt (aligned to burst boundary)
             addr = (addr | (burst_size - 1)) + 1;
         }
-    } else if (pkt->getPType() == 0x8) {
+    } else if (pkt->getPType() == 0x10) {
         /* pkt is readForCompress */
         assert((pkt->getAddr() & 0xFFF) == 0);
         assert(pkt->getSize() == 4096);
@@ -1160,26 +1115,89 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
             real_addr = cLStatus.second;
             real_size = (inInflate)?64:sizeMap[type];
 
-            Addr end_addr = real_addr + real_size - 1;
-            uint8_t burstN = (end_addr / burst_size) - (real_addr / burst_size) + 1;
-            assert(burstN <= 2);
-            if (burstN > 1) {
-                crossBoundary = true;
-            }
-
-            if (crossBoundary) {
-                extraAccess++;
-                unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
-                assert(prefix < real_size);
-                unsigned suffix = real_size - prefix;
-                std::vector<unsigned> memPktLen = {prefix, suffix};
-                std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
-
-                for (unsigned int j = 0; j < 2; j++) {
+            if (real_size == 0) {
+                stats.readBursts++;
+                stats.requestorReadAccesses[pkt->requestorId()]++;
+                pktsServicedByPageBuffer++;
+            } else {
+                Addr end_addr = real_addr + real_size - 1;
+                uint8_t burstN = (end_addr / burst_size) - (real_addr / burst_size) + 1;
+                assert(burstN <= 2);
+                if (burstN > 1) {
+                    crossBoundary = true;
+                }
+    
+                if (crossBoundary) {
+                    extraAccess++;
+                    unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
+                    assert(prefix < real_size);
+                    unsigned suffix = real_size - prefix;
+                    std::vector<unsigned> memPktLen = {prefix, suffix};
+                    std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
+    
+                    for (unsigned int j = 0; j < 2; j++) {
+                        // First check write buffer to see if the data is already at
+                        // the controller
+                        bool foundInWrQ = false;
+                        Addr burst_addr = burstAlign(memPktAddr[j], mem_intr);
+                        // if the burst address is not present then there is no need
+                        // looking any further
+                        if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
+                            for (const auto& vec : writeQueue) {
+                                for (const auto& p : vec) {
+                                    // check if the read is subsumed in the write queue
+                                    // packet we are looking at
+                                    if (p->addr <= memPktAddr[j] &&
+                                        ((memPktAddr[j] + memPktLen[j]) <= (p->addr + p->size))) {
+    
+                                        foundInWrQ = true;
+                                        pktsServicedByWrQ++;
+                                        DPRINTF(MemCtrl,
+                                                "Read to addr %#x with size %d serviced by "
+                                                "write queue\n",
+                                                memPktAddr[j], memPktLen[j]);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+    
+                        if (!foundInWrQ) {
+                            // Make the burst helper for split packets
+                            if (burst_helper == NULL) {
+                                DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
+                                        "memory requests\n", pkt->getAddr(), pkt_count);
+                                burst_helper = new BurstHelper(pkt_count);
+                            }
+                            MemPacket* mem_pkt;
+                            mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], true,
+                                                                    mem_intr->pseudoChannel);
+    
+                            // Increment read entries of the rank (dram)
+                            // Increment count to trigger issue of non-deterministic read (nvm)
+                            mem_intr->setupRank(mem_pkt->rank, true);
+                            // Default readyTime to Max; will be reset once read is issued
+                            mem_pkt->readyTime = MaxTick;
+                            mem_pkt->burstHelper = burst_helper;
+    
+                            // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
+    
+                            DPRINTF(MemCtrl, "Compr: Adding to read queue\n");
+    
+                            readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
+    
+                            // log packet
+                            logRequest(MemCtrl::READ, pkt->requestorId(),
+                                    pkt->qosValue(), mem_pkt->addr, 1);
+    
+                            mem_intr->readQueueSize++;
+                        }
+                    }
+                } else {
                     // First check write buffer to see if the data is already at
                     // the controller
                     bool foundInWrQ = false;
-                    Addr burst_addr = burstAlign(memPktAddr[j], mem_intr);
+                    Addr burst_addr = burstAlign(real_addr, mem_intr);
                     // if the burst address is not present then there is no need
                     // looking any further
                     if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
@@ -1187,21 +1205,23 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
                             for (const auto& p : vec) {
                                 // check if the read is subsumed in the write queue
                                 // packet we are looking at
-                                if (p->addr <= memPktAddr[j] &&
-                                    ((memPktAddr[j] + memPktLen[j]) <= (p->addr + p->size))) {
-
+                                if (p->addr <= real_addr &&
+                                   ((real_addr + real_size) <= (p->addr + p->size))) {
+    
                                     foundInWrQ = true;
                                     pktsServicedByWrQ++;
                                     DPRINTF(MemCtrl,
                                             "Read to addr %#x with size %d serviced by "
                                             "write queue\n",
-                                            memPktAddr[j], memPktLen[j]);
+                                            real_addr, real_size);
                                     break;
                                 }
                             }
                         }
                     }
-
+    
+                    // If not found in the write q, make a memory packet and
+                    // push it onto the read queue
                     if (!foundInWrQ) {
                         // Make the burst helper for split packets
                         if (burst_helper == NULL) {
@@ -1210,85 +1230,26 @@ MemCtrl::addToReadQueueForCompr(PacketPtr pkt,
                             burst_helper = new BurstHelper(pkt_count);
                         }
                         MemPacket* mem_pkt;
-                        mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], true,
+                        mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, true,
                                                                 mem_intr->pseudoChannel);
-
+    
                         // Increment read entries of the rank (dram)
                         // Increment count to trigger issue of non-deterministic read (nvm)
                         mem_intr->setupRank(mem_pkt->rank, true);
                         // Default readyTime to Max; will be reset once read is issued
                         mem_pkt->readyTime = MaxTick;
                         mem_pkt->burstHelper = burst_helper;
-
-                        // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
-
-                        DPRINTF(MemCtrl, "Compr: Adding to read queue\n");
-
+    
+                        DPRINTF(MemCtrl, "Adding to read queue\n");
+    
                         readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
+    
                         // log packet
                         logRequest(MemCtrl::READ, pkt->requestorId(),
                                 pkt->qosValue(), mem_pkt->addr, 1);
-
+    
                         mem_intr->readQueueSize++;
                     }
-                }
-            } else {
-                // First check write buffer to see if the data is already at
-                // the controller
-                bool foundInWrQ = false;
-                Addr burst_addr = burstAlign(real_addr, mem_intr);
-                // if the burst address is not present then there is no need
-                // looking any further
-                if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
-                    for (const auto& vec : writeQueue) {
-                        for (const auto& p : vec) {
-                            // check if the read is subsumed in the write queue
-                            // packet we are looking at
-                            if (p->addr <= real_addr &&
-                               ((real_addr + real_size) <= (p->addr + p->size))) {
-
-                                foundInWrQ = true;
-                                pktsServicedByWrQ++;
-                                DPRINTF(MemCtrl,
-                                        "Read to addr %#x with size %d serviced by "
-                                        "write queue\n",
-                                        real_addr, real_size);
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // If not found in the write q, make a memory packet and
-                // push it onto the read queue
-                if (!foundInWrQ) {
-                    // Make the burst helper for split packets
-                    if (burst_helper == NULL) {
-                        DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
-                                "memory requests\n", pkt->getAddr(), pkt_count);
-                        burst_helper = new BurstHelper(pkt_count);
-                    }
-                    MemPacket* mem_pkt;
-                    mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, true,
-                                                            mem_intr->pseudoChannel);
-
-                    // Increment read entries of the rank (dram)
-                    // Increment count to trigger issue of non-deterministic read (nvm)
-                    mem_intr->setupRank(mem_pkt->rank, true);
-                    // Default readyTime to Max; will be reset once read is issued
-                    mem_pkt->readyTime = MaxTick;
-                    mem_pkt->burstHelper = burst_helper;
-
-                    DPRINTF(MemCtrl, "Adding to read queue\n");
-
-                    readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
-                    // log packet
-                    logRequest(MemCtrl::READ, pkt->requestorId(),
-                            pkt->qosValue(), mem_pkt->addr, 1);
-
-                    mem_intr->readQueueSize++;
                 }
             }
             // Starting address of next memory pkt (aligned to burst boundary)
@@ -1399,6 +1360,9 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
     // only add to the write queue here. whenever the request is
     // eventually done, set the readyTime, and call schedule()
     assert(pkt->isWrite());
+    assert(pkt->getPType() != 1);
+
+    DPRINTF(MemCtrl, "the pkt is %s\n", pkt->cmdString());
 
     // if the request size is larger than burst size, the pkt is split into
     // multiple packets
@@ -1419,12 +1383,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
     std::vector<uint8_t> newData(new_size, 0);
 
-    printf("the current pageNum for pageBuffer is %d\n", pageNum);
-
-    if (pkt->getPType() == 0x1) {
-        if (!isEligible(pkt)) {
-            return false;
-        }
+    if (pkt->getPType() == 0x2) {
 
         bool pageOverFlow = false;
         PPN overflowPageNum = 0;
@@ -1477,15 +1436,19 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 /*write back to pageBuffer and update the mPageBuffer if necessary */
                 if (isAllZero(cacheLine)) {
                     /* set the mPageBuffer entry to be 0 */
+                    DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                     setType(metaData, cacheLineIdx, 0);
                 } else {
                     if (compressed.size() <= 8) {
                         /* set the mPageBuffer entry to be 0b1*/
+                        DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                         setType(metaData, cacheLineIdx, 0b01);
                     } else if (compressed.size() <= 32) {
+                        DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                         setType(metaData, cacheLineIdx, 0b10);
                     } else {
                         /* set to be 0b11 */
+                        DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                         setType(metaData, cacheLineIdx, 0b11);
                     }
                 }
@@ -1512,51 +1475,51 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
                 restoreData(cacheLine, type);
 
-                printf("the restored cacheline value is :\n");
-                for (int qw = 0; qw < 8; qw++) {
-                   for (int er = 0; er < 8; er++) {
-                       printf("%02x ", cacheLine[qw* 8 + er]);
-                   }
-                   printf("\n");
-                }
-                printf("\n");
+                // printf("the restored cacheline value is :\n");
+                // for (int qw = 0; qw < 8; qw++) {
+                //    for (int er = 0; er < 8; er++) {
+                //        printf("%02x ", cacheLine[qw* 8 + er]);
+                //    }
+                //    printf("\n");
+                // }
+                // printf("\n");
 
                 /* write the data */
                 uint64_t ofs = addr - base_addr;
                 uint8_t loc = addr & 0x3F;
                 size_t writeSize = std::min(64UL - loc, pkt->getSize() - ofs);
 
-                printf("the pkt data is :\n");
-                uint8_t* test_start = pkt->getPtr<uint8_t>();
-                for (int zx = 0; zx < pkt->getSize(); zx++) {
-                    if (zx % 8 == 0) {
-                        printf("\n");
-                    }
-                    printf("%02x ", test_start[zx]);
+                // printf("the pkt data is :\n");
+                // uint8_t* test_start = pkt->getPtr<uint8_t>();
+                // for (int zx = 0; zx < pkt->getSize(); zx++) {
+                //     if (zx % 8 == 0) {
+                //         printf("\n");
+                //     }
+                //     printf("%02x ", test_start[zx]);
 
-                }
+                // }
 
 
-                printf("the backup data is :\n");
-                test_start = pkt->comprBackup->getPtr<uint8_t>();
-                for (int zx = 0; zx < pkt->comprBackup->getSize(); zx++) {
-                    if (zx % 8 == 0) {
-                        printf("\n");
-                    }
-                    printf("%02x ", test_start[zx]);
-                }
+                // printf("the backup data is :\n");
+                // test_start = pkt->comprBackup->getPtr<uint8_t>();
+                // for (int zx = 0; zx < pkt->comprBackup->getSize(); zx++) {
+                //     if (zx % 8 == 0) {
+                //         printf("\n");
+                //     }
+                //     printf("%02x ", test_start[zx]);
+                // }
 
 
                 pkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
 
-                printf("the updated cacheline value is :\n");
-                for (int qw = 0; qw < 8; qw++) {
-                   for (int er = 0; er < 8; er++) {
-                       printf("%02x ", cacheLine[qw* 8 + er]);
-                   }
-                   printf("\n");
-                }
-                printf("\n");
+                // printf("the updated cacheline value is :\n");
+                // for (int qw = 0; qw < 8; qw++) {
+                //    for (int er = 0; er < 8; er++) {
+                //        printf("%02x ", cacheLine[qw* 8 + er]);
+                //    }
+                //    printf("\n");
+                // }
+                // printf("\n");
 
                 std::vector<uint8_t> compressed = compress(cacheLine);
                 printf("after compress, the updated cacheline value is :\n");
@@ -1639,8 +1602,12 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             blockedForCompr = true;
             PacketPtr readForCompress = new Packet(pkt, pkt->comprTick - 1);
             readForCompress->configAsReadForCompress(pkt->comprMetaDataMap[overflowPageNum], overflowPageNum);
+
+            DPRINTF(MemCtrl, "(pkt) Line %d, the readForCompress pkt %lx\n", __LINE__, readForCompress);
+
             waitQueue.insert(readForCompress);
-            if (!addToReadQueue(pkt, pkt_count, dram)) {
+
+            if (!addToReadQueueForCompr(readForCompress, 64, dram)) {
                 // If we are not already scheduled to get a request out of the
                 // queue, do so now
                 if (!nextReqEvent.scheduled()) {
@@ -1648,16 +1615,23 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                     schedule(nextReqEvent, curTick());
                 }
             }
+            readForCompress->checkIfValid();
             return false;
 
         } else {
             pkt->comprMetaDataMap = metaDataMap;
             //update the new metadata for the following pkt in waitQueue
             for (const auto& ppn: updatedMetaData) {
+                DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
                 updateSubseqMetaData(pkt, ppn);
                 printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
                 mcache.add(ppn * 64, metaDataMap[ppn]);
-                mem_intr->atomicWrite(metaDataMap[ppn], ppn * 64, 64, 0);
+                if (ppn != pageNum) {
+                    mem_intr->atomicWrite(metaDataMap[ppn], ppn * 64, 64, 0);
+                } else {
+                    mPageBuffer = metaDataMap[ppn];
+                }
+                
             }
 
             addr = base_addr;
@@ -1681,33 +1655,83 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                     Addr real_addr = cLStatus.second;
                     unsigned real_size = (cLStatus.first)?64:sizeMap[type];
 
-                    /* now we have the real_addr, real_size, want to add the pkt to the write queue */
-                    Addr addrAligned = burstAlign(real_addr, mem_intr);
-                    Addr end_addr = real_addr + real_size - 1;
-                    Addr endAddrAligned = burstAlign(end_addr, mem_intr);
+                    if (real_size > 0) {
+                        /* only do the memory access if the cacheline is not zero */
+                        /* now we have the real_addr, real_size, want to add the pkt to the write queue */
+                        Addr addrAligned = burstAlign(real_addr, mem_intr);
+                        Addr end_addr = real_addr + real_size - 1;
+                        Addr endAddrAligned = burstAlign(end_addr, mem_intr);
 
-                    if (addrAligned != endAddrAligned) {
-                        /* the compressed cacheline cross the boundary */
-                        assert(endAddrAligned - addrAligned == burst_size);
-                        stats.writeBursts += 2;
-                        stats.requestorWriteAccesses[pkt->requestorId()] += 2;
+                        if (addrAligned != endAddrAligned) {
+                            /* the compressed cacheline cross the boundary */
+                            assert(endAddrAligned - addrAligned == burst_size);
+                            stats.writeBursts += 2;
+                            stats.requestorWriteAccesses[pkt->requestorId()] += 2;
 
-                        unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
-                        assert(prefix < real_size);
-                        unsigned suffix = real_size - prefix;
-                        std::vector<unsigned> memPktLen = {prefix, suffix};
-                        std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
-                        assert(memPktAddr[1] = endAddrAligned);
+                            unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
+                            assert(prefix < real_size);
+                            unsigned suffix = real_size - prefix;
+                            std::vector<unsigned> memPktLen = {prefix, suffix};
+                            std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
+                            assert(memPktAddr[1] = endAddrAligned);
 
-                        for (int j = 0 ; j < 2; j++) {
-                            bool merged = isInWriteQueue.find(burstAlign(memPktAddr[j], mem_intr)) !=
+                            for (int j = 0 ; j < 2; j++) {
+                                bool merged = isInWriteQueue.find(burstAlign(memPktAddr[j], mem_intr)) !=
+                                    isInWriteQueue.end();
+
+                                // if the item was not merged we need to create a new write
+                                // and enqueue it
+                                if (!merged) {
+                                    MemPacket* mem_pkt;
+                                    mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], false,
+                                                                            mem_intr->pseudoChannel);
+                                    // Default readyTime to Max if nvm interface;
+                                    //will be reset once read is issued
+                                    mem_pkt->readyTime = MaxTick;
+
+                                    mem_intr->setupRank(mem_pkt->rank, false);
+
+                                    stats.wrQLenPdf[totalWriteQueueSize]++;
+
+                                    DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
+
+                                    writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
+                                    isInWriteQueue.insert(burstAlign(addr, mem_intr));
+
+                                    // log packet
+                                    logRequest(MemCtrl::WRITE, pkt->requestorId(),
+                                            pkt->qosValue(), mem_pkt->addr, 1);
+
+                                    mem_intr->writeQueueSize++;
+
+                                    // assert(totalWriteQueueSize == isInWriteQueue.size());
+
+                                    // Update stats
+                                    stats.avgWrQLen = totalWriteQueueSize;
+
+                                } else {
+                                    DPRINTF(MemCtrl,
+                                            "Merging write burst with existing queue entry\n");
+
+                                    // keep track of the fact that this burst effectively
+                                    // disappeared as it was merged with an existing one
+                                    stats.mergedWrBursts++;
+                                }
+                            }
+
+                        } else {
+                            stats.writeBursts++;
+                            stats.requestorWriteAccesses[pkt->requestorId()]++;
+                            // see if we can merge with an existing item in the write
+                            // queue and keep track of whether we have merged or not
+                            bool merged = isInWriteQueue.find(burstAlign(real_addr, mem_intr)) !=
                                 isInWriteQueue.end();
 
                             // if the item was not merged we need to create a new write
                             // and enqueue it
                             if (!merged) {
                                 MemPacket* mem_pkt;
-                                mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], false,
+                                mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, false,
                                                                         mem_intr->pseudoChannel);
                                 // Default readyTime to Max if nvm interface;
                                 //will be reset once read is issued
@@ -1741,54 +1765,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                 // disappeared as it was merged with an existing one
                                 stats.mergedWrBursts++;
                             }
-                        }
-
-                    } else {
-                        stats.writeBursts++;
-                        stats.requestorWriteAccesses[pkt->requestorId()]++;
-                        // see if we can merge with an existing item in the write
-                        // queue and keep track of whether we have merged or not
-                        bool merged = isInWriteQueue.find(burstAlign(real_addr, mem_intr)) !=
-                            isInWriteQueue.end();
-
-                        // if the item was not merged we need to create a new write
-                        // and enqueue it
-                        if (!merged) {
-                            MemPacket* mem_pkt;
-                            mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, false,
-                                                                    mem_intr->pseudoChannel);
-                            // Default readyTime to Max if nvm interface;
-                            //will be reset once read is issued
-                            mem_pkt->readyTime = MaxTick;
-
-                            mem_intr->setupRank(mem_pkt->rank, false);
-
-                            stats.wrQLenPdf[totalWriteQueueSize]++;
-
-                            DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-
-                            writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-                            isInWriteQueue.insert(burstAlign(addr, mem_intr));
-
-                            // log packet
-                            logRequest(MemCtrl::WRITE, pkt->requestorId(),
-                                    pkt->qosValue(), mem_pkt->addr, 1);
-
-                            mem_intr->writeQueueSize++;
-
-                            // assert(totalWriteQueueSize == isInWriteQueue.size());
-
-                            // Update stats
-                            stats.avgWrQLen = totalWriteQueueSize;
-
-                        } else {
-                            DPRINTF(MemCtrl,
-                                    "Merging write burst with existing queue entry\n");
-
-                            // keep track of the fact that this burst effectively
-                            // disappeared as it was merged with an existing one
-                            stats.mergedWrBursts++;
-                        }
+                        } 
                     }
                 }
                 // Starting address of next memory pkt (aligned to burst_size boundary)
@@ -1806,15 +1783,13 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             }
             printf("\n");
             
-
-
             pkt->setAddr(addrAligned);
             pkt->setSizeForMC(new_size);
             pkt->allocateForMC();
             pkt->setDataForMC(newData.data(), 0, new_size);
         }
 
-    } else if (pkt->getPType() == 0x4) {
+    } else if (pkt->getPType() == 0x8) {
         /* pkt is writeMetaData */
         assert(pkt->getSize() == 64);
         assert(pkt->getAddr() % 64 == 0);
@@ -1863,7 +1838,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
         }
         pkt->writeDataForMC(reinterpret_cast<uint8_t*>(pkt->getAddr()), 0, 64);
         return true;
-    } else if (pkt->getPType() == 0x10){
+    } else if (pkt->getPType() == 0x20){
         /* pkt is writeForCompress */
         assert(isEligible(pkt));
         assert(blockedForCompr);
@@ -1883,11 +1858,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             bool crossBoundary = false;
             std::vector<uint8_t> cacheLine(64, 0);
 
-            if (pkt->comprBackup->getPType() == 0x2) {
-                /* if pkt->comprBackup is readMetaData */
-                assert(ppn == pageNum);
-            }
-
             uint8_t type = getType(metaData, cacheLineIdx);
             std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
 
@@ -1897,99 +1867,107 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
             assert(inInflate == false);
 
-            /* now we have the real_addr, real_size, want to add the pkt to the write queue */
-            Addr addrAligned = burstAlign(real_addr, mem_intr);
-            Addr end_addr = real_addr + real_size - 1;
-            Addr endAddrAligned = burstAlign(end_addr, mem_intr);
+            if (real_size > 0) {
+                DPRINTF(MemCtrl, "real_addr: %lx\n", real_addr);
 
-            if (addrAligned != endAddrAligned) {
-                /* the compressed cacheline cross the boundary */
-                assert(endAddrAligned - addrAligned == burst_size);
-
-                unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
-                assert(prefix < real_size);
-                unsigned suffix = real_size - prefix;
-                std::vector<unsigned> memPktLen = {prefix, suffix};
-                std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
-                assert(memPktAddr[1] == endAddrAligned);
-
-                for (int j = 0 ; j < 2; j++) {
-                    bool merged = isInWriteQueue.find(burstAlign(memPktAddr[j], mem_intr)) !=
+                /* now we have the real_addr, real_size, want to add the pkt to the write queue */
+                Addr addrAligned = burstAlign(real_addr, mem_intr);
+                Addr end_addr = real_addr + real_size - 1;
+    
+                DPRINTF(MemCtrl, "end_addr: %lx\n", end_addr);
+                Addr endAddrAligned = burstAlign(end_addr, mem_intr);
+    
+                if (addrAligned != endAddrAligned) {
+                    DPRINTF(MemCtrl, "endAddrAligned is %lx, addrAligned is %lx\n", endAddrAligned, addrAligned);
+                    /* the compressed cacheline cross the boundary */
+                    assert(endAddrAligned - addrAligned == burst_size);
+    
+                    unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
+                    assert(prefix < real_size);
+                    unsigned suffix = real_size - prefix;
+                    std::vector<unsigned> memPktLen = {prefix, suffix};
+                    std::vector<Addr> memPktAddr = {real_addr, (real_addr | (burst_size - 1)) + 1};
+                    assert(memPktAddr[1] == endAddrAligned);
+    
+                    for (int j = 0 ; j < 2; j++) {
+                        bool merged = isInWriteQueue.find(burstAlign(memPktAddr[j], mem_intr)) !=
+                            isInWriteQueue.end();
+    
+                        // if the item was not merged we need to create a new write
+                        // and enqueue it
+                        if (!merged) {
+                            MemPacket* mem_pkt;
+                            mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], false,
+                                                                    mem_intr->pseudoChannel);
+                            // Default readyTime to Max if nvm interface;
+                            //will be reset once read is issued
+                            mem_pkt->readyTime = MaxTick;
+    
+                            mem_intr->setupRank(mem_pkt->rank, false);
+    
+                            DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
+    
+                            writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
+                            isInWriteQueue.insert(burstAlign(addr, mem_intr));
+    
+                            // log packet
+                            logRequest(MemCtrl::WRITE, pkt->requestorId(),
+                                    pkt->qosValue(), mem_pkt->addr, 1);
+    
+                            mem_intr->writeQueueSize++;
+    
+                            // assert(totalWriteQueueSize == isInWriteQueue.size());
+    
+                        } else {
+                            DPRINTF(MemCtrl,
+                                    "Merging write burst with existing queue entry\n");
+    
+                            // keep track of the fact that this burst effectively
+                            // disappeared as it was merged with an existing one
+                        }
+                    }
+    
+                } else {
+                    // see if we can merge with an existing item in the write
+                    // queue and keep track of whether we have merged or not
+                    bool merged = isInWriteQueue.find(burstAlign(real_addr, mem_intr)) !=
                         isInWriteQueue.end();
-
+    
                     // if the item was not merged we need to create a new write
                     // and enqueue it
                     if (!merged) {
                         MemPacket* mem_pkt;
-                        mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], false,
+                        mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, false,
                                                                 mem_intr->pseudoChannel);
                         // Default readyTime to Max if nvm interface;
                         //will be reset once read is issued
                         mem_pkt->readyTime = MaxTick;
-
+    
                         mem_intr->setupRank(mem_pkt->rank, false);
-
+    
                         DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-
+    
                         writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
                         isInWriteQueue.insert(burstAlign(addr, mem_intr));
-
+    
                         // log packet
                         logRequest(MemCtrl::WRITE, pkt->requestorId(),
                                 pkt->qosValue(), mem_pkt->addr, 1);
-
+    
                         mem_intr->writeQueueSize++;
-
+    
                         // assert(totalWriteQueueSize == isInWriteQueue.size());
-
+    
                     } else {
                         DPRINTF(MemCtrl,
                                 "Merging write burst with existing queue entry\n");
-
+    
                         // keep track of the fact that this burst effectively
                         // disappeared as it was merged with an existing one
                     }
                 }
-
-            } else {
-                // see if we can merge with an existing item in the write
-                // queue and keep track of whether we have merged or not
-                bool merged = isInWriteQueue.find(burstAlign(real_addr, mem_intr)) !=
-                    isInWriteQueue.end();
-
-                // if the item was not merged we need to create a new write
-                // and enqueue it
-                if (!merged) {
-                    MemPacket* mem_pkt;
-                    mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, false,
-                                                            mem_intr->pseudoChannel);
-                    // Default readyTime to Max if nvm interface;
-                    //will be reset once read is issued
-                    mem_pkt->readyTime = MaxTick;
-
-                    mem_intr->setupRank(mem_pkt->rank, false);
-
-                    DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-
-                    writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-                    isInWriteQueue.insert(burstAlign(addr, mem_intr));
-
-                    // log packet
-                    logRequest(MemCtrl::WRITE, pkt->requestorId(),
-                            pkt->qosValue(), mem_pkt->addr, 1);
-
-                    mem_intr->writeQueueSize++;
-
-                    // assert(totalWriteQueueSize == isInWriteQueue.size());
-
-                } else {
-                    DPRINTF(MemCtrl,
-                            "Merging write burst with existing queue entry\n");
-
-                    // keep track of the fact that this burst effectively
-                    // disappeared as it was merged with an existing one
-                }
             }
+            addr = (addr | (burst_size - 1)) + 1;
         }
 
     } else {
@@ -2217,24 +2195,14 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
 
     /* initial an auxiliary pkt for next steps */
     PacketPtr auxPkt = new Packet(pkt, curTick());
+
+    DPRINTF(MemCtrl, "(pkt) Line %d, the aux pkt %lx for the request %s\n", __LINE__, auxPkt, pkt->cmdString());
+    DPRINTF(MemCtrl, "the auxPkt is %s\n", auxPkt->cmdString());
+
     printf("marker accept TimingReq: request %s addr %#x size %d\n",
         pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
     printf("%lx\n", auxPkt);
     memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-    if (pkt->isWrite()) {
-        printf("the original write pkt data is: \n");
-        uint8_t* test_my_s = pkt->getPtr<uint8_t>();
-        for (int ts = 0; ts < pkt->getSize(); ts++) {
-            if (ts % 8 == 0) {
-                printf("\n");
-            }
-            printf("%02x ", static_cast<unsigned int>(test_my_s[ts]));
-        }
-        printf("\n");
-
-
-    }
 
     if (hasBlocked) {
         auxPkt->comprTick = pkt->comprTick;
@@ -2242,96 +2210,7 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
 
     waitQueue.insert(auxPkt);
 
-    uint64_t pageCnt = 0;
-    uint64_t entryCnt = 0;
-
-    Addr base_addr = pkt->getAddr();
-    Addr addr = base_addr;
-
-    for (unsigned int i = 0 ; i < pkt_count; i++) {
-        PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-        printf("iterate the pkt, check if metadata for ppn is available %d\n", ppn);
-
-        if (auxPkt->comprMetaDataMap.find(ppn) == auxPkt->comprMetaDataMap.end()) {
-            printf("not found in metadata map\n");
-            pageCnt++;
-            /* step 1.1: calculate the MPA for metadata */
-            Addr memory_addr = ppn * 64;
-            std::vector<uint8_t> metaData(64, 0);
-            printf("cur pageNum is %d\n", pageNum);
-
-            if (pageNum == ppn) {
-                printf("hit in pageBuffer\n");
-                auxPkt->comprMetaDataMap[ppn] = mPageBuffer;
-                entryCnt++;
-            } else {
-                if (mcache.isExist(memory_addr)) {
-                    printf("hit in metadata cache, ppn %d\n", ppn);
-                    auxPkt->comprMetaDataMap[ppn] = mcache.find(memory_addr);
-                    printf("the metadata is :\n");
-                    for (int k = 0; k < 64; k++) {
-                        printf("%02x",static_cast<unsigned>(auxPkt->comprMetaDataMap[ppn][k]));
-
-                    }
-                    printf("\n");
-
-
-                    entryCnt++;
-                } else {
-                    // create a readMetaData pkt and add to read queue
-                    PacketPtr readMetaData = new Packet(auxPkt);
-                    readMetaData->configAsReadM(memory_addr);
-                    if (!addToReadQueueForCompr(readMetaData, 1, dram)) {
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    auxPkt->comprMetaDataMap[ppn] = metaData;  /* right now just set the metadata to zero */
-                }
-            }
-        }
-        // Starting address of next memory pkt (aligned to burst boundary)
-        addr = (addr | (burst_size - 1)) + 1;
-    }
-    assert(pageCnt == auxPkt->comprMetaDataMap.size());
-
-    if (pageCnt == entryCnt) {
-        /* auxPkt is ready for process */
-        auxPkt->comprIsReady = true;
-        if (pkt->isWrite()) {
-            DPRINTF(MemCtrl, "Line %d, enter the addToWriteQueueForCompr function\n", __LINE__);
-            if (addToWriteQueueForCompr(auxPkt, pkt_count, dram)) {
-                // If we are not already scheduled to get a request out of the
-                // queue, do so now
-                if (!nextReqEvent.scheduled()) {
-                    DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                    schedule(nextReqEvent, curTick());
-                }
-            }
-            stats.writeReqs++;
-            stats.bytesWrittenSys += size;
-        } else {
-            assert(pkt->isRead());
-            DPRINTF(MemCtrl, "Line %d, enter the addToReadQueueForCompr function\n", __LINE__);
-            if (!addToReadQueueForCompr(auxPkt, pkt_count, dram)) {
-                // If we are not already scheduled to get a request out of the
-                // queue, do so now
-                if (!nextReqEvent.scheduled()) {
-                    DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                    schedule(nextReqEvent, curTick());
-                }
-            }
-            stats.readReqs++;
-            stats.bytesReadSys += size;
-        }
-    } else {
-        auxPkt->setEntryCnt(entryCnt);
-    }
-
+    prepareMetaData(auxPkt);
     return true;
 }
 
@@ -2527,8 +2406,9 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
 {
     uint32_t burst_size = mem_intr->bytesPerBurst();
     uint32_t pType = pkt->getPType();
-    if (pType == 0x1) {
-        /* auxPkt (regular) */
+    assert(pType != 1);
+    if (pType == 0x2) {
+        /* auxPkt */
         assert(pkt->comprBackup);
         PacketPtr real_recv_pkt = pkt->comprBackup;
 
@@ -2581,7 +2461,7 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             // is still having a pointer to it
             pendingDelete.reset(real_recv_pkt);
         }
-    } else if (pType == 0x2) {
+    } else if (pType == 0x4) {
         /* readMetaData */
         assert(pkt->comprBackup);
         PacketPtr auxPkt = pkt->comprBackup;
@@ -2592,9 +2472,13 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
                  "Can't handle address range for packet %s\n", pkt->print());
         std::vector<uint8_t> metaData(64, 0);
 
-        /* the metadata has already read before */
-        pkt->writeDataForMC(metaData.data(), 0, 64);
         PPN ppn = pkt->getAddr() / 64;
+
+        if (ppn == pageNum) {
+            metaData = mPageBuffer;
+        } else {
+            mem_intr->atomicRead(metaData.data(), pkt->getAddr(), 64);
+        }
 
         /* finish read the metaData */
         if (!isValidMetaData(metaData)) {
@@ -2602,37 +2486,75 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             // flush the pageBuffer in memory
             blockedForCompr = true;
             PacketPtr writeForCompress = new Packet(pkt, auxPkt->comprTick - 1);
+            DPRINTF(MemCtrl, "(pkt) Line %d, the writeForCompress pkt %lx\n", __LINE__, writeForCompress); 
 
             std::vector<uint8_t> uncompressPage(4096);
             for (int u = 0; u < 64; u++) {
-                for (int v = 0; v < 64; v++) {
-                    std::vector<uint8_t> curCL(64, 0);
-                    memcpy(curCL.data(), pageBuffer.data() + 64 * u + v, 64);
-                    restoreData(curCL, getType(mPageBuffer, u));
-                    assert(curCL.size() == 64);
-                    memcpy(uncompressPage.data() + 64 * u + v, curCL.data(), 64);
+                std::vector<uint8_t> curCL(64, 0);
+                memcpy(curCL.data(), pageBuffer.data() + 64 * u, 64);
+                restoreData(curCL, getType(mPageBuffer, u));
+                assert(curCL.size() == 64);
+                memcpy(uncompressPage.data() + 64 * u, curCL.data(), 64);
+            }
+
+            // finialize the mPageBuffer
+            uint64_t cPageSize = 0;
+            for (uint8_t u = 0; u < 64; u++) {
+                uint8_t type = getType(mPageBuffer, u);
+                uint8_t dataLen = sizeMap[type];
+                cPageSize += dataLen;
+            }
+
+            uint64_t cur = 0;
+            while (cur < cPageSize) {
+                assert(freeList.size() > 0);
+                Addr chunkAddr = freeList.front();
+                DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
+                freeList.pop_front();
+
+                int chunkIdx = cur / 512;
+                uint64_t MPFN = (chunkAddr >> 9);
+                for (int u = 3; u >= 0; u--) {   // 4B per chunk
+                    uint8_t val = MPFN & 0xFF;
+                    MPFN >>= 8;
+                    mPageBuffer[2 + chunkIdx * 4 + u] = val;
                 }
+                if (cur + 512 < cPageSize) {
+                    cur += 512;
+                } else {
+                    break;
+                }
+            }
+            // store the size of compressedPage into the control block (using 12 bit)
+            uint64_t compressedSize = cPageSize;
+
+            mPageBuffer[1] = compressedSize & (0xFF);
+            mPageBuffer[0] = mPageBuffer[0] | ((compressedSize >> 8) & 0xF);
+
+            DPRINTF(MemCtrl, "the final metadata is: \n");
+            for (int k = 0; k < 64; k++) {
+                printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
 
             }
+            printf("\n");
 
             writeForCompress->configAsWriteForCompress(uncompressPage.data(), pageNum);
             writeForCompress->comprMetaDataMap[pageNum] = mPageBuffer;
 
             waitQueue.insert(writeForCompress);
-            if (!addToReadQueue(writeForCompress, 64, dram)) {
-                // If we are not already scheduled to get a request out of the
-                // queue, do so now
-                if (!nextReqEvent.scheduled()) {
-                    DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                    schedule(nextReqEvent, curTick());
-                }
-            }
-
             // TODO2: right now just instantly update the metadata in memory
             mem_intr->atomicWrite(mPageBuffer, pageNum * 64, 64);
             printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, pageNum * 64);
             mcache.add(pageNum * 64, mPageBuffer);
-            updateSubseqMetaData(writeForCompress, pageNum); //TODO
+            DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
+            updateSubseqMetaData(writeForCompress, pageNum);
+            
+            initialPageBuffer(ppn);
+            assert(auxPkt->comprMetaDataMap.find(ppn) != auxPkt->comprMetaDataMap.end());
+            auxPkt->comprMetaDataMap[ppn] = mPageBuffer;
+            mem_intr->atomicWrite(mPageBuffer, ppn * 64, 64);
+
+            assignToQueue(writeForCompress);
 
         } else {
             assert(auxPkt->comprMetaDataMap.find(ppn) != auxPkt->comprMetaDataMap.end());
@@ -2644,50 +2566,27 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             if (auxPkt->IncreEntryCnt()) {
                 /* auxPkt is ready for process */
                 auxPkt->comprIsReady = true;
-                if (auxPkt->isWrite()) {
-                    DPRINTF(MemCtrl, "Line %d, enter the addToWriteQueueForCompr function\n", __LINE__);
-                    if (addToWriteQueueForCompr(auxPkt, pkt_count, dram)) {;
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    stats.writeReqs++;
-                    stats.bytesWrittenSys += size;
-                } else {
-                    assert(pkt->isRead());
-                    if (!addToReadQueueForCompr(auxPkt, pkt_count, dram)) {
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    stats.readReqs++;
-                    stats.bytesReadSys += size;
-                }
+                assignToQueue(auxPkt, true);
             }
         }
-    } else if (pType == 0x4) {
+    } else if (pType == 0x8) {
         /* writeMetaData */
         panic("should never enter this");
 
-    } else if (pType == 0x8) {
+    } else if (pType == 0x10) {
         /* readForCompress */
         assert(pkt->getSize() == 4096);
         assert((pkt->getAddr() & 0xFFF) == 0);
         assert(pkt->comprBackup->isWrite());
         PPN ppn = (pkt->getAddr() >> 12 & ((1ULL << 52) - 1));
-
+        pkt->checkIfValid();
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
         std::vector<uint8_t> newMetaData = recompressTiming(pkt);
         assert(pkt->comprTick != 0);
         PacketPtr writeForCompress = new Packet(pkt->comprBackup, pkt->comprTick);
-
-        writeForCompress->configAsWriteForCompress(pkt->getPtr<uint8_t>(), ppn);
+        DPRINTF(MemCtrl, "(pkt) Line %d, the readMetaData pkt %lx\n", __LINE__, writeForCompress); 
+        uint8_t* start_addr = pkt->getPtr<uint8_t>();
+        writeForCompress->configAsWriteForCompress(start_addr, ppn);
         writeForCompress->comprMetaDataMap[ppn] = newMetaData;
 
         /* readForCompress has finished its life time */
@@ -2696,68 +2595,35 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         /* add the writeForCompress to the waitQueue */
         waitQueue.insert(writeForCompress);
 
-        DPRINTF(MemCtrl, "Line %d, enter the addToWriteQueueForCompr function\n", __LINE__);
-        if (addToWriteQueueForCompr(writeForCompress, 64, dram)) {
-            // If we are not already scheduled to get a request out of the
-            // queue, do so now
-            if (!nextReqEvent.scheduled()) {
-                DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                schedule(nextReqEvent, curTick());
-            }
-        } else {
-            panic("At this moment, the writeForCompress should be ready");
-        }
         // TODO2: right now just instantly update the metadata in memory
         printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
         mcache.add(ppn * 64, newMetaData);
         mem_intr->atomicWrite(newMetaData, ppn * 64, 64);
+        DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
         updateSubseqMetaData(writeForCompress, ppn); //TODO
 
+        assignToQueue(writeForCompress);
 
-    } else if (pType == 0x10) {
+    } else if (pType == 0x20) {
         /* writeForCompress */
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
         waitQueue.erase(pkt);
+        checkForReadyPkt();
+
         PacketPtr backup_pkt = pkt->comprBackup;
-        if (backup_pkt->getPType() == 0x2) {
+        if (backup_pkt->getPType() == 0x4) {
             /* backup is readMetaData, the writeForCompress is triggered by replace the pageBuffer */
             PacketPtr auxPkt = backup_pkt->comprBackup;
             PPN ppn = backup_pkt->getAddr() / 64;
-            initialPageBuffer(ppn);
             assert(auxPkt->comprMetaDataMap.find(ppn) != auxPkt->comprMetaDataMap.end());
-            auxPkt->comprMetaDataMap[ppn] = mPageBuffer;
 
             unsigned size = auxPkt->comprBackup->getSize();
             unsigned offset = auxPkt->getAddr() & (burst_size - 1);
             unsigned int pkt_count = divCeil(offset + auxPkt->getSize(), burst_size);
             if (auxPkt->IncreEntryCnt()) {
                 /* auxPkt is ready for process */
-                pkt->comprIsReady = true;
-                if (auxPkt->isWrite()) {
-                    DPRINTF(MemCtrl, "Line %d, enter the addToWriteQueueForCompr function\n", __LINE__);
-                    if (addToWriteQueueForCompr(auxPkt, pkt_count, dram)) {;
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    stats.writeReqs++;
-                    stats.bytesWrittenSys += size;
-                } else {
-                    assert(pkt->isRead());
-                    if (!addToReadQueueForCompr(auxPkt, pkt_count, dram)) {
-                        // If we are not already scheduled to get a request out of the
-                        // queue, do so now
-                        if (!nextReqEvent.scheduled()) {
-                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                            schedule(nextReqEvent, curTick());
-                        }
-                    }
-                    stats.readReqs++;
-                    stats.bytesReadSys += size;
-                }
+                auxPkt->comprIsReady = true;
+                assignToQueue(auxPkt);
             }
 
         }
@@ -3604,6 +3470,7 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                         while (cur < compressedPage.size()) {
                             assert(freeList.size() > 0);
                             Addr chunkAddr = freeList.front();
+                            DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
                             freeList.pop_front();
 
                             int chunkIdx = cur / 512;
@@ -4128,11 +3995,23 @@ uint8_t MemCtrl::getType(const std::vector<uint8_t>& metaData, const uint8_t& in
 }
 
 void MemCtrl::setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type) {
+    printf("original metadata: \n");
+    for (int k = 0; k < 64; k++) {
+        printf("%02x",static_cast<unsigned>(metaData[k]));
+
+    }
+    printf("\n");
     assert(type < 4);
     int startPos = (2 + 32) * 8 + index * 2;
     int loc = startPos / 8;
     int ofs = startPos % 8;
     metaData[loc] = (metaData[loc] & (~(0b11 << (6 - ofs)))) |  (type << (6 - ofs));
+    printf("new metadata: \n");
+    for (int k = 0; k < 64; k++) {
+        printf("%02x",static_cast<unsigned>(metaData[k]));
+
+    }
+    printf("\n");
 }
 
 void MemCtrl::initialPageBuffer(const PPN& ppn) {
@@ -4272,6 +4151,7 @@ MemCtrl::allocateInflateRoom(std::vector<uint8_t>& metaData, const uint8_t& inde
         /* we have to allocate a new chunk */
         DPRINTF(MemCtrl, "Line %d: Opps, we have to allocate a new chunk\n", __LINE__);
         addr = freeList.front();
+        DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
         freeList.pop_front();
         uint64_t MPFN = (addr >> 9);
         for (int u = 3; u >= 0; u--) {
@@ -4501,24 +4381,28 @@ MemCtrl::recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uin
        bool isCompressed = false;
        if (isAllZero(curCL)) {
            /* set the mPageBuffer entry to be 0 */
+           DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
            setType(newMetaData, i, 0);
        } else {
            if (compressedCL.size() <= 8) {
                /* set the mPageBuffer entry to be 0b1*/
+               DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                setType(newMetaData, i, 0b01);
                for (unsigned int v = 0; v < compressedCL.size(); v++) {
                    buffer[size + v] = compressedCL[v];
                }
                size = size + 8;
            } else if (compressedCL.size() <= 32) {
-               setType(newMetaData, i, 0b10);
-               for (unsigned int v = 0; v < compressedCL.size(); v++) {
-                   buffer[size + v] = compressedCL[v];
-               }
+                DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
+                setType(newMetaData, i, 0b10);
+                for (unsigned int v = 0; v < compressedCL.size(); v++) {
+                    buffer[size + v] = compressedCL[v];
+                }
                size = size + 32;
            } else {
-              assert(compressedCL.size() == 64);
+                assert(compressedCL.size() == 64);
                /* set to be 0b11 */
+               DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                setType(newMetaData, i, 0b11);
                for (unsigned int v = 0; v < 64; v++) {
                    buffer[size + v] = curCL[v];
@@ -4532,6 +4416,7 @@ MemCtrl::recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uin
    while (cur < size) {
        assert(freeList.size() > 0);
        Addr chunkAddr = freeList.front();
+       DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
        freeList.pop_front();
 
        int chunkIdx = cur / 512;
@@ -4597,18 +4482,22 @@ MemCtrl::recompressTiming(PacketPtr writeForCompress) {
         bool isCompressed = false;
         if (isAllZero(curCL)) {
             /* set the mPageBuffer entry to be 0 */
+            DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
             setType(metaData, i, 0);
         } else {
             if (compressedCL.size() <= 8) {
                 /* set the mPageBuffer entry to be 0b1*/
+                DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                 setType(metaData, i, 0b01);
                 size = size + 8;
             } else if (compressedCL.size() <= 32) {
+                DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                 setType(metaData, i, 0b10);
                 size = size + 32;
             } else {
                 assert(compressedCL.size() == 64);
                 /* set to be 0b11 */
+                DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                 setType(metaData, i, 0b11);
                 size = size + 64;
             }
@@ -4638,6 +4527,7 @@ MemCtrl::recompressTiming(PacketPtr writeForCompress) {
     while (cur < size) {
         assert(freeList.size() > 0);
         Addr chunkAddr = freeList.front();
+        DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
         freeList.pop_front();
 
         int chunkIdx = cur / 512;
@@ -4646,6 +4536,11 @@ MemCtrl::recompressTiming(PacketPtr writeForCompress) {
             uint8_t val = MPFN & 0xFF;
             MPFN >>= 8;
             metaData[2 + chunkIdx * 4 + u] = val;
+        }
+        if (cur + 512 < size) {
+            cur += 512;
+        } else {
+            break;
         }
     }
     // store the size of compressedPage into the control block (using 12 bit)
@@ -4674,6 +4569,14 @@ MemCtrl::compress(const std::vector<uint8_t>& cacheLine) {
 
 void
 MemCtrl::decompress(std::vector<uint8_t>& data) {
+    printf("decompress the data: \n");
+    for (int i = 0 ; i < data.size(); i++) {
+        if (i % 8 == 0) {
+            printf("\n");
+        }
+        printf("%d ", static_cast<unsigned int>(data[i]));
+    }
+    printf("\n");
     uint64_t base = 0;
     for (int i = 0; i < 4; i++) {
         base = (base << 8) | data[0];
@@ -5151,10 +5054,10 @@ MemCtrl::isEligible(PacketPtr pkt, bool ignoreRead) {
     bool res = true;
     for (auto it = waitQueue.begin(); it != targetPkt; it++) {
         PacketPtr curPkt = *it;
-        if (ignoreRead && (!curPkt->isWrite())) {
-            continue;
-        }
         if (hasOverLap(curPkt->comprMetaDataMap, pkt->comprMetaDataMap)) {
+
+            DPRINTF(MemCtrl, "collide with the pkt %lx\n", curPkt);
+            DPRINTF(MemCtrl, "tick for collided pkt is %lld, tick for pkt is %lld\n", curPkt->comprTick, pkt->comprTick);
             res = false;
             break;
         }
@@ -5178,6 +5081,7 @@ void
 MemCtrl::updateSubseqMetaData(PacketPtr pkt, PPN ppn) {
 
     std::set<PacketPtr>::iterator it = waitQueue.find(pkt);
+    DPRINTF(MemCtrl, "the address of pkt is %lx\n", pkt);
     assert(it != waitQueue.end());
     it++;
     assert(pkt->comprMetaDataMap.find(ppn) != pkt->comprMetaDataMap.end());
@@ -5189,6 +5093,139 @@ MemCtrl::updateSubseqMetaData(PacketPtr pkt, PPN ppn) {
             waitQueue.erase(it);
             curPkt->comprMetaDataMap[ppn] = metaData;
             waitQueue.insert(curPkt);
+        }
+    }
+}
+
+void 
+MemCtrl::checkForReadyPkt(){
+    for (const auto& wait_pkt: waitQueue) {
+        if (wait_pkt->comprIsReady) {
+            assignToQueue(wait_pkt);
+        }
+    }
+}
+
+void
+MemCtrl::prepareMetaData(PacketPtr pkt){
+    if (!isEligible(pkt)) {
+        return;
+    }
+    unsigned size = pkt->getSize();
+    uint32_t burst_size = dram->bytesPerBurst();
+
+    unsigned offset = pkt->getAddr() & (burst_size - 1);
+    unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    assert(pkt->getPType() == 0x2);  // the pkt type should be auxiliary
+    uint64_t pageCnt = 0;
+    uint64_t entryCnt = 0;
+
+    Addr base_addr = pkt->getAddr();
+    Addr addr = base_addr;
+
+    for (unsigned int i = 0 ; i < pkt_count; i++) {
+        PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
+
+        printf("iterate the pkt, check if metadata for ppn is available %d\n", ppn);
+
+        if (pkt->comprMetaDataMap.find(ppn) == pkt->comprMetaDataMap.end()) {
+            printf("not found in metadata map\n");
+            pageCnt++;
+            /* step 1.1: calculate the MPA for metadata */
+            Addr memory_addr = ppn * 64;
+            std::vector<uint8_t> metaData(64, 0);
+            printf("cur pageNum is %d\n", pageNum);
+
+            if (pageNum == ppn) {
+                printf("hit in pageBuffer\n");
+                pkt->comprMetaDataMap[ppn] = mPageBuffer;
+                entryCnt++;
+            } else {
+                if (mcache.isExist(memory_addr)) {
+                    printf("hit in metadata cache, ppn %d\n", ppn);
+                    pkt->comprMetaDataMap[ppn] = mcache.find(memory_addr);
+                    printf("the metadata is :\n");
+                    for (int k = 0; k < 64; k++) {
+                        printf("%02x",static_cast<unsigned>(pkt->comprMetaDataMap[ppn][k]));
+
+                    }
+                    printf("\n");
+
+
+                    entryCnt++;
+                } else {
+                    // create a readMetaData pkt and add to read queue
+                    PacketPtr readMetaData = new Packet(pkt);
+                    DPRINTF(MemCtrl, "(pkt) Line %d, the readMetaData pkt %lx\n", __LINE__, readMetaData); 
+                    
+                    readMetaData->configAsReadM(memory_addr);
+                    if (!addToReadQueueForCompr(readMetaData, 1, dram)) {
+                        // If we are not already scheduled to get a request out of the
+                        // queue, do so now
+                        if (!nextReqEvent.scheduled()) {
+                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
+                            schedule(nextReqEvent, curTick());
+                        }
+                    }
+                    pkt->comprMetaDataMap[ppn] = metaData;  /* right now just set the metadata to zero */
+                }
+            }
+        }
+        // Starting address of next memory pkt (aligned to burst boundary)
+        addr = (addr | (burst_size - 1)) + 1;
+    }
+    assert(pageCnt == pkt->comprMetaDataMap.size());
+
+    if (pageCnt == entryCnt) {
+        /* auxPkt is ready for process */
+        pkt->comprIsReady = true;
+        assignToQueue(pkt, true);
+    } else {
+        pkt->setEntryCnt(entryCnt);
+    }
+
+}
+
+void
+MemCtrl::assignToQueue(PacketPtr pkt, bool recordStats) {
+    if (!isEligible(pkt)) {
+        return;
+    }
+    unsigned size = pkt->getSize();
+    uint32_t burst_size = dram->bytesPerBurst();
+
+    unsigned offset = pkt->getAddr() & (burst_size - 1);
+    unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    if (pkt->isWrite()) {
+        DPRINTF(MemCtrl, "Line %d, enter the addToWriteQueueForCompr function\n", __LINE__);
+        if (addToWriteQueueForCompr(pkt, pkt_count, dram)) {
+            // If we are not already scheduled to get a request out of the
+            // queue, do so now
+            if (!nextReqEvent.scheduled()) {
+                DPRINTF(MemCtrl, "Request scheduled immediately\n");
+                schedule(nextReqEvent, curTick());
+            }
+        }
+        if (recordStats) {
+            stats.writeReqs++;
+            stats.bytesWrittenSys += size;
+        }
+    } else {
+        assert(pkt->isRead());
+        DPRINTF(MemCtrl, "Line %d, enter the addToReadQueueForCompr function\n", __LINE__);
+        if (!addToReadQueueForCompr(pkt, pkt_count, dram)) {
+            // If we are not already scheduled to get a request out of the
+            // queue, do so now
+            if (!nextReqEvent.scheduled()) {
+                DPRINTF(MemCtrl, "Request scheduled immediately\n");
+                schedule(nextReqEvent, curTick());
+            }
+        }
+        if (recordStats) {
+            stats.readReqs++;
+            stats.bytesReadSys += size;
         }
     }
 }

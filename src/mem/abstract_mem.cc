@@ -694,14 +694,14 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 restoreData(cacheLine, type);
                 assert(cacheLine.size() == 64);
 
-                printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
-                for (int u = 0; u < 8; u++) {
-                   for (int v = 0; v < 8; v++) {
-                       printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
-                   }
-                   printf("\n");
-                }
-                printf("\n");
+                // printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
+                // for (int u = 0; u < 8; u++) {
+                //    for (int v = 0; v < 8; v++) {
+                //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                //    }
+                //    printf("\n");
+                // }
+                // printf("\n");
 
                 uint8_t loc = addr & 0x3F;
                 uint64_t ofs = addr - pkt->getAddr();
@@ -721,7 +721,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
         // }
         // printf("\n");
 
-        if (pkt->getPType() == 0x1) {
+        if (pkt->getPType() == 0x2) {
             printf("marker:%lx\n", pkt);
             printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
@@ -747,7 +747,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
         // no need to do anything
     } else if (pkt->isWrite()) {
-        if (writeOK(real_recv_pkt)) {
+        if (writeOK(real_recv_pkt) || pkt->getPType() == 0x20) {
             /* assert the pkt should be burst_size/cacheline aligned */
             assert(offset == 0);
             assert((size & (burst_size - 1)) == 0);
@@ -760,7 +760,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
             // }
             // printf("\n");
 
-            if (pkt->getPType() == 0x1) {
+            if (pkt->getPType() == 0x2) {
                 printf("marker:%lx\n", pkt);
                 printf("Timing write marker: ");
                 uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
@@ -786,14 +786,14 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
                 pkt->writeDataForMC(cacheLine.data(), ofs, 64);
 
-                printf("Abstract Memory Line %d: write the pkt data\n", __LINE__);
-                for (int u = 0; u < 8; u++) {
-                   for (int v = 0; v < 8; v++) {
-                       printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
-                   }
-                   printf("\n");
-                }
-                printf("\n");
+                // printf("Abstract Memory Line %d: write the pkt data\n", __LINE__);
+                // for (int u = 0; u < 8; u++) {
+                //    for (int v = 0; v < 8; v++) {
+                //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                //    }
+                //    printf("\n");
+                // }
+                // printf("\n");
 
                 /* compress the cacheline */
                 std::vector<uint8_t> compressed = compress(cacheLine);
@@ -812,8 +812,20 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 // printf("cacheline idx is %d\n", cacheLineIdx);
 
                 if (pageNum == ppn) {
-                    printf("pageNum == ppn, pageBuffer hit");
+                    printf("pageNum == ppn, pageBuffer hit, pageNum is %ld\n", pageNum);
                     assert(mPageBuffer.size() == metaData.size());
+                    printf("mPageBuffer: \n");
+                    for (int k = 0; k < 64; k++) {
+                        printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
+        
+                    }
+                    printf("\n");
+                    printf("metadata: \n");
+                    for (int k = 0; k < 64; k++) {
+                        printf("%02x",static_cast<unsigned>(metaData[k]));
+        
+                    }
+                    printf("\n");
                     for (int temp = 0; temp < metaData.size(); temp++) {
                         assert(mPageBuffer[temp] == metaData[temp]);
                     }
@@ -826,7 +838,9 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                     bool inInflate = cLStatus.first;
                     Addr real_addr = cLStatus.second;
 
-                    printf("Abstract Memory Line %d: get the real addr 0x%lx\n", __LINE__, real_addr);
+                    if (!inInflate && type != 0) {
+                        printf("Abstract Memory Line %d: get the real addr 0x%lx\n", __LINE__, real_addr);
+                    }
 
                     if (inInflate) {
                         type = 0b11;
@@ -893,7 +907,8 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
         panic("Unexpected packet %s", pkt->print());
     }
 
-    if (real_recv_pkt->needsResponse()) {
+    if (real_recv_pkt->getPType() == 0x1 && real_recv_pkt->needsResponse()) {
+        printf("make response, pkt is %lx\n", real_recv_pkt);
         real_recv_pkt->makeResponse();
     }
 }

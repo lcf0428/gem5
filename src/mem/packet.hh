@@ -548,11 +548,12 @@ class Packet : public Printable, public Extensible<Packet>
     /* ===== special for compresso ===== */
     enum : PacketType
     {
-        regular                 = 0x00000001,
-        readMetaData            = 0x00000002,
-        writeMetaData           = 0x00000004,
-        readForCompress         = 0x00000008,
-        writeForCompress        = 0x00000010
+        origin                  = 0x00000001,
+        auxiliary               = 0x00000002,
+        readMetaData            = 0x00000004,
+        writeMetaData           = 0x00000008,
+        readForCompress         = 0x00000010,
+        writeForCompress        = 0x00000020
     };
 
 
@@ -908,7 +909,7 @@ class Packet : public Printable, public Extensible<Packet>
            htmTransactionUid(0),
            headerDelay(0), snoopDelay(0),
            payloadDelay(0), senderState(NULL),
-           comprBackup(nullptr), comprPType(regular),
+           comprBackup(nullptr), comprPType(origin),
            comprIsReady(false)
     {
         flags.clear();
@@ -951,7 +952,7 @@ class Packet : public Printable, public Extensible<Packet>
            htmTransactionUid(0),
            headerDelay(0),
            snoopDelay(0), payloadDelay(0), senderState(NULL),
-           comprBackup(nullptr), comprPType(regular),
+           comprBackup(nullptr), comprPType(origin),
            comprIsReady(false)
     {
         flags.clear();
@@ -984,7 +985,7 @@ class Packet : public Printable, public Extensible<Packet>
            snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
            senderState(pkt->senderState),
-           comprBackup(nullptr), comprPType(regular),
+           comprBackup(nullptr), comprPType(origin),
            comprIsReady(false)
     {
         if (!clear_flags)
@@ -1037,7 +1038,7 @@ class Packet : public Printable, public Extensible<Packet>
         senderState(pkt->senderState),
         comprBackup(pkt),
         comprEntryCnt(entryCnt),
-        comprPType(regular),
+        comprPType(auxiliary),
         comprTick(tick),
         comprIsReady(false)
     {
@@ -1479,7 +1480,9 @@ class Packet : public Printable, public Extensible<Packet>
     {
         // if either this command or the response command has a data
         // payload, actually allocate space
+        printf("%s\n", cmdString().c_str());
         if (hasData() || hasRespData()) {
+            printf("hasData or hasRespData()\n");
             assert(flags.noneSet(STATIC_DATA|DYNAMIC_DATA));
             flags.set(DYNAMIC_DATA);
             data = new uint8_t[getSize()];
@@ -1695,46 +1698,47 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsReadM(Addr meta_addr) {
         setPType(readMetaData);
+        setReadCmd();
         setSizeForMC();
         allocateForMC();
         setAddr(meta_addr);
-        setReadCmd();
     }
 
     void configAsWriteM(const std::vector<uint8_t>& metaData, uint64_t ppn) {
         Addr meta_addr = ppn * 64;
 
         setPType(writeMetaData);
+        setWriteCmd();
         setSizeForMC();
         allocateForMC();
         setAddr(meta_addr);
         setDataForMC(metaData.data(), 0, 64);
-        setWriteCmd();
     }
 
     void configAsReadForCompress(std::vector<uint8_t>& metaData, uint64_t ppn) {
         setPType(readForCompress);
+        setReadCmd();
         setSizeForMC(4096);
         allocateForMC();
         setAddr(ppn << 12);
-        setReadCmd();
         comprMetaDataMap[ppn] = metaData;
+        assert(flags.isSet(STATIC_DATA | DYNAMIC_DATA));
+        comprIsReady = true;
     }
 
     void configAsWriteForCompress(uint8_t* page, uint64_t ppn) {
         setPType(writeForCompress);
+        setWriteCmd();
         setSizeForMC(4096);
         allocateForMC();
         setAddr(ppn << 12);
-        setWriteCmd();
-
         setDataForMC(page, 0, 4096);
-
-
+        comprIsReady = true;
     }
 
-    bool operator<(const Packet& other) const {
-        return comprTick < other.comprTick;
+    void checkIfValid() {
+        printf("enter the check if valid\n");
+        assert(flags.isSet(STATIC_DATA | DYNAMIC_DATA));
     }
 };
 
