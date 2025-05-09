@@ -1480,9 +1480,9 @@ class Packet : public Printable, public Extensible<Packet>
     {
         // if either this command or the response command has a data
         // payload, actually allocate space
-        printf("%s\n", cmdString().c_str());
+        // printf("%s\n", cmdString().c_str());
         if (hasData() || hasRespData()) {
-            printf("hasData or hasRespData()\n");
+            // printf("hasData or hasRespData()\n");
             assert(flags.noneSet(STATIC_DATA|DYNAMIC_DATA));
             flags.set(DYNAMIC_DATA);
             data = new uint8_t[getSize()];
@@ -1737,7 +1737,7 @@ class Packet : public Printable, public Extensible<Packet>
     }
 
     void checkIfValid() {
-        printf("enter the check if valid\n");
+        // printf("enter the check if valid\n");
         assert(flags.isSet(STATIC_DATA | DYNAMIC_DATA));
     }
 };

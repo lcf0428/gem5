@@ -580,11 +580,11 @@ class MemCtrl : public qos::MemCtrl
         void add(const Addr& addr, const std::vector<uint8_t>& val) {
           // printf("@mcache  the addr is 0x%lx, current size of cache is: %d\n", addr, _sz);
           // printf("the metadata is :\n");
-          for (int k = 0; k < 64; k++) {
-              printf("%02x",static_cast<unsigned>(val[k]));
+          // for (int k = 0; k < 64; k++) {
+          //     printf("%02x",static_cast<unsigned>(val[k]));
 
-          }
-          printf("\n");
+          // }
+          // printf("\n");
           // printf("@mcache the capacity of cache is %d\n", _capacity);
           
           assert(val.size() == 64);

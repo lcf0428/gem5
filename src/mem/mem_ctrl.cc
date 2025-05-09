@@ -444,7 +444,6 @@ MemCtrl::recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                 updateMetaData(compressed, metaData, cacheLineIdx, inInflate, mem_intr);
                 auxPkt->comprMetaDataMap[ppn] = metaData;
                 Addr metadata_addr = ppn * 64;
-                printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, metadata_addr);
                 mcache.add(metadata_addr, metaData);
                 mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
             }
@@ -615,7 +614,6 @@ MemCtrl::recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
 
                         auxPkt->comprMetaDataMap[ppn] = metaData;
                         Addr metadata_addr = ppn * 64;
-                        printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, metadata_addr);
                         mcache.add(metadata_addr, metaData);
                         mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
                     }
@@ -1522,14 +1520,14 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 // printf("\n");
 
                 std::vector<uint8_t> compressed = compress(cacheLine);
-                printf("after compress, the updated cacheline value is :\n");
-                for (int qw = 0; qw < compressed.size(); qw++) {
-                    if (qw % 8 == 0) {
-                        printf("\n");
-                    }
-                    printf("%02x ", cacheLine[qw]);
-                }
-                printf("\n");
+                // printf("after compress, the updated cacheline value is :\n");
+                // for (int qw = 0; qw < compressed.size(); qw++) {
+                //     if (qw % 8 == 0) {
+                //         printf("\n");
+                //     }
+                //     printf("%02x ", cacheLine[qw]);
+                // }
+                // printf("\n");
 
                 if (compressed.size() > 32) {
                     assert(compressed.size() == 64);
@@ -1553,13 +1551,13 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                         /* do nothing */
                     } else {
                         DPRINTF(MemCtrl, "Line %d: the cacheline overflow \n", __LINE__);
-                        printf("the pageNum is %d\n", ppn);
-                        printf("the metadata is :\n");\
-                        for (int k = 0; k < 64; k++) {
-                            printf("%02x",static_cast<unsigned>(metaData[k]));
+                        // printf("the pageNum is %d\n", ppn);
+                        // printf("the metadata is :\n");\
+                        // for (int k = 0; k < 64; k++) {
+                        //     printf("%02x",static_cast<unsigned>(metaData[k]));
 
-                        }
-                        printf("\n");
+                        // }
+                        // printf("\n");
 
                         if (hasFreeInflateRoom(metaData)) {
                             Addr inflatedAddr = allocateInflateRoom(metaData, cacheLineIdx);
@@ -1572,12 +1570,12 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                             real_size = 64;
                             updatedMetaData.insert(ppn);
 
-                            printf("the new metadata is :\n");
-                            for (int k = 0; k < 64; k++) {
-                                printf("%02x",static_cast<unsigned>(metaData[k]));
+                            // printf("the new metadata is :\n");
+                            // for (int k = 0; k < 64; k++) {
+                            //     printf("%02x",static_cast<unsigned>(metaData[k]));
 
-                            }
-                            printf("\n");
+                            // }
+                            // printf("\n");
                         } else {
                             /* deal with page overflow */
                             overflowPageNum = ppn;
@@ -1624,7 +1622,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             for (const auto& ppn: updatedMetaData) {
                 DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
                 updateSubseqMetaData(pkt, ppn);
-                printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
+                // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
                 mcache.add(ppn * 64, metaDataMap[ppn]);
                 if (ppn != pageNum) {
                     mem_intr->atomicWrite(metaDataMap[ppn], ppn * 64, 64, 0);
@@ -1643,7 +1641,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 Addr metadata_addr = ppn * 64;
                 std::vector<uint8_t> metaData = pkt->comprMetaDataMap[ppn];
 
-                printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, metadata_addr);
+                // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, metadata_addr);
                 mcache.add(metadata_addr, metaData);
                 //TODO2 create a write metadata to add to WriteQueue
                 mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
@@ -1666,6 +1664,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                             /* the compressed cacheline cross the boundary */
                             assert(endAddrAligned - addrAligned == burst_size);
                             stats.writeBursts += 2;
+                            // printf("pkt->requestorId is %d\n", pkt->requestorId());
                             stats.requestorWriteAccesses[pkt->requestorId()] += 2;
 
                             unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
@@ -1691,7 +1690,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
                                     mem_intr->setupRank(mem_pkt->rank, false);
 
-                                    stats.wrQLenPdf[totalWriteQueueSize]++;
+                                    // stats.wrQLenPdf[totalWriteQueueSize]++;
 
                                     DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
 
@@ -1721,6 +1720,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
                         } else {
                             stats.writeBursts++;
+                            // printf("pkt->requestorId is %d\n", pkt->requestorId());
                             stats.requestorWriteAccesses[pkt->requestorId()]++;
                             // see if we can merge with an existing item in the write
                             // queue and keep track of whether we have merged or not
@@ -1739,7 +1739,8 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
                                 mem_intr->setupRank(mem_pkt->rank, false);
 
-                                stats.wrQLenPdf[totalWriteQueueSize]++;
+                                // printf("totalWriteQueuesize %lld, writeBufferSize %lld\n", totalWriteQueueSize, writeBufferSize);
+                                // stats.wrQLenPdf[totalWriteQueueSize]++;
 
                                 DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
 
@@ -1774,14 +1775,14 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
             assert(new_size % 64 == 0);
 
-            printf("the changed newdata is :\n");
-            for (int qw = 0; qw < newData.size(); qw++) {
-                if (qw % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ", newData[qw]);
-            }
-            printf("\n");
+            // printf("the changed newdata is :\n");
+            // for (int qw = 0; qw < newData.size(); qw++) {
+            //     if (qw % 8 == 0) {
+            //         printf("\n");
+            //     }
+            //     printf("%02x ", newData[qw]);
+            // }
+            // printf("\n");
             
             pkt->setAddr(addrAligned);
             pkt->setSizeForMC(new_size);
@@ -2069,16 +2070,17 @@ MemCtrl::recvTimingReqLogic(PacketPtr pkt) {
             stats.numWrRetry++;
             return false;
         } else {
-            printf("marker accept TimingReq: request %s addr %#x size %d\n",
-                pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
+            // printf("marker accept TimingReq: request %s addr %#x size %d\n",
+            //     pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
 
-            uint8_t* my_test_start = pkt->getPtr<uint8_t>();
-            for (int is = 0; is < pkt->getSize(); is++) {
-                if (is % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ",static_cast<unsigned>(my_test_start[is]));
-            }
+            // uint8_t* my_test_start = pkt->getPtr<uint8_t>();
+            // for (int is = 0; is < pkt->getSize(); is++) {
+            //     if (is % 8 == 0) {
+            //         printf("\n");
+            //     }
+            //     printf("%02x ",static_cast<unsigned>(my_test_start[is]));
+            // }
+            // printf("\n");
             addToWriteQueue(pkt, pkt_count, dram);
             // If we are not already scheduled to get a request out of the
             // queue, do so now
@@ -2099,8 +2101,8 @@ MemCtrl::recvTimingReqLogic(PacketPtr pkt) {
             stats.numRdRetry++;
             return false;
         } else {
-            printf("marker accept TimingReq: request %s addr %#x size %d\n",
-                pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
+            // printf("marker accept TimingReq: request %s addr %#x size %d\n",
+            //     pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
             if (!addToReadQueue(pkt, pkt_count, dram)) {
                 // If we are not already scheduled to get a request out of the
                 // queue, do so now
@@ -2199,9 +2201,9 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
     DPRINTF(MemCtrl, "(pkt) Line %d, the aux pkt %lx for the request %s\n", __LINE__, auxPkt, pkt->cmdString());
     DPRINTF(MemCtrl, "the auxPkt is %s\n", auxPkt->cmdString());
 
-    printf("marker accept TimingReq: request %s addr %#x size %d\n",
-        pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
-    printf("%lx\n", auxPkt);
+    // printf("marker accept TimingReq: request %s addr %#x size %d\n",
+    //     pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
+    // printf("%lx\n", auxPkt);
     memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
     if (hasBlocked) {
@@ -2424,8 +2426,9 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         // mem_intr->access(pkt);
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
         waitQueue.erase(pkt);
+        checkForReadyPkt();
 
-        printf("after erase the current pkt, the waitQueue size is %d\n", waitQueue.size());
+        // printf("after erase the current pkt, the waitQueue size is %d\n", waitQueue.size());
 
         unsigned size = real_recv_pkt->getSize();
         unsigned offset = real_recv_pkt->getAddr() & (burst_size - 1);
@@ -2531,12 +2534,12 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             mPageBuffer[1] = compressedSize & (0xFF);
             mPageBuffer[0] = mPageBuffer[0] | ((compressedSize >> 8) & 0xF);
 
-            DPRINTF(MemCtrl, "the final metadata is: \n");
-            for (int k = 0; k < 64; k++) {
-                printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
+            // DPRINTF(MemCtrl, "the final metadata is: \n");
+            // for (int k = 0; k < 64; k++) {
+            //     printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
 
-            }
-            printf("\n");
+            // }
+            // printf("\n");
 
             writeForCompress->configAsWriteForCompress(uncompressPage.data(), pageNum);
             writeForCompress->comprMetaDataMap[pageNum] = mPageBuffer;
@@ -2544,7 +2547,7 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             waitQueue.insert(writeForCompress);
             // TODO2: right now just instantly update the metadata in memory
             mem_intr->atomicWrite(mPageBuffer, pageNum * 64, 64);
-            printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, pageNum * 64);
+            // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, pageNum * 64);
             mcache.add(pageNum * 64, mPageBuffer);
             DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
             updateSubseqMetaData(writeForCompress, pageNum);
@@ -2596,7 +2599,7 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         waitQueue.insert(writeForCompress);
 
         // TODO2: right now just instantly update the metadata in memory
-        printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
+        // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
         mcache.add(ppn * 64, newMetaData);
         mem_intr->atomicWrite(newMetaData, ppn * 64, 64);
         DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
@@ -2608,7 +2611,6 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         /* writeForCompress */
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
         waitQueue.erase(pkt);
-        checkForReadyPkt();
 
         PacketPtr backup_pkt = pkt->comprBackup;
         if (backup_pkt->getPType() == 0x4) {
@@ -2628,6 +2630,7 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
 
         }
         blockedForCompr = false;
+        checkForReadyPkt();
         /* the memory controller is no longer blocked */
         /* reprocess the blocked pkt */
         for (unsigned int u = 0; u < blockPktQueue.size(); u++) {
@@ -3451,11 +3454,11 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                     if (pageNum != ppn) {
                         DPRINTF(MemCtrl, "need to flush the page %d\n", pageNum);
 
-                        DPRINTF(MemCtrl, "the origin metadata is: \n");
-                        for (int k = 0; k < 64; k++) {
-                            printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
-                        }
-                        printf("\n");
+                        // DPRINTF(MemCtrl, "the origin metadata is: \n");
+                        // for (int k = 0; k < 64; k++) {
+                        //     printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
+                        // }
+                        // printf("\n");
 
                         std::vector<uint8_t> compressedPage;
                         for (uint8_t u = 0; u < 64; u++) {
@@ -3494,16 +3497,16 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                         mPageBuffer[1] = compressedSize & (0xFF);
                         mPageBuffer[0] = mPageBuffer[0] | ((compressedSize >> 8) & 0xF);
 
-                        DPRINTF(MemCtrl, "the final metadata is: \n");
-                        for (int k = 0; k < 64; k++) {
-                            printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
+                        // DPRINTF(MemCtrl, "the final metadata is: \n");
+                        // for (int k = 0; k < 64; k++) {
+                        //     printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
 
-                        }
-                        printf("\n");
+                        // }
+                        // printf("\n");
 
                         /* write the mPageBuffer to mcache and memory */
                         Addr mPageBufferAddr = pageNum * 64;
-                        printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, mPageBufferAddr);
+                        // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, mPageBufferAddr);
                         mcache.add(mPageBufferAddr, mPageBuffer);
                         mem_intr->atomicWrite(mPageBuffer, mPageBufferAddr, 64, 0);
                         if (auxPkt->comprMetaDataMap.find(pageNum) != auxPkt->comprMetaDataMap.end()) {
@@ -3995,23 +3998,11 @@ uint8_t MemCtrl::getType(const std::vector<uint8_t>& metaData, const uint8_t& in
 }
 
 void MemCtrl::setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type) {
-    printf("original metadata: \n");
-    for (int k = 0; k < 64; k++) {
-        printf("%02x",static_cast<unsigned>(metaData[k]));
-
-    }
-    printf("\n");
     assert(type < 4);
     int startPos = (2 + 32) * 8 + index * 2;
     int loc = startPos / 8;
     int ofs = startPos % 8;
     metaData[loc] = (metaData[loc] & (~(0b11 << (6 - ofs)))) |  (type << (6 - ofs));
-    printf("new metadata: \n");
-    for (int k = 0; k < 64; k++) {
-        printf("%02x",static_cast<unsigned>(metaData[k]));
-
-    }
-    printf("\n");
 }
 
 void MemCtrl::initialPageBuffer(const PPN& ppn) {
@@ -4229,12 +4220,12 @@ MemCtrl::moveForwardAtomic(std::vector<uint8_t>& metaData, const uint8_t& index,
     valid_inflate_num--;
     metaData[63] = (metaData[63] & 0xE0) | (valid_inflate_num & 0x1F);
 
-    printf("the new metadata is :\n");
-    for (int k = 0; k < 64; k++) {
-        printf("%02x",static_cast<unsigned>(metaData[k]));
+    // printf("the new metadata is :\n");
+    // for (int k = 0; k < 64; k++) {
+    //     printf("%02x",static_cast<unsigned>(metaData[k]));
 
-    }
-    printf("\n");
+    // }
+    // printf("\n");
 
     Addr originAddr = 0;
     uint64_t sumSize = 0;
@@ -4449,7 +4440,7 @@ MemCtrl::recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uin
 
    /* write the metadata to mcache and memory */
    Addr metadata_addr = pageNum * 64;
-   printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, metadata_addr);
+//    printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, pageNum, metadata_addr);
    mcache.add(metadata_addr, newMetaData);
    mem_intr->atomicWrite(newMetaData, metadata_addr, 64, 0);
 
@@ -4569,14 +4560,6 @@ MemCtrl::compress(const std::vector<uint8_t>& cacheLine) {
 
 void
 MemCtrl::decompress(std::vector<uint8_t>& data) {
-    printf("decompress the data: \n");
-    for (int i = 0 ; i < data.size(); i++) {
-        if (i % 8 == 0) {
-            printf("\n");
-        }
-        printf("%d ", static_cast<unsigned int>(data[i]));
-    }
-    printf("\n");
     uint64_t base = 0;
     for (int i = 0; i < 4; i++) {
         base = (base << 8) | data[0];
@@ -5127,30 +5110,30 @@ MemCtrl::prepareMetaData(PacketPtr pkt){
     for (unsigned int i = 0 ; i < pkt_count; i++) {
         PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
 
-        printf("iterate the pkt, check if metadata for ppn is available %d\n", ppn);
+        // printf("iterate the pkt, check if metadata for ppn is available %d\n", ppn);
 
         if (pkt->comprMetaDataMap.find(ppn) == pkt->comprMetaDataMap.end()) {
-            printf("not found in metadata map\n");
+            // printf("not found in metadata map\n");
             pageCnt++;
             /* step 1.1: calculate the MPA for metadata */
             Addr memory_addr = ppn * 64;
             std::vector<uint8_t> metaData(64, 0);
-            printf("cur pageNum is %d\n", pageNum);
+            // printf("cur pageNum is %d\n", pageNum);
 
             if (pageNum == ppn) {
-                printf("hit in pageBuffer\n");
+                // printf("hit in pageBuffer\n");
                 pkt->comprMetaDataMap[ppn] = mPageBuffer;
                 entryCnt++;
             } else {
                 if (mcache.isExist(memory_addr)) {
-                    printf("hit in metadata cache, ppn %d\n", ppn);
+                    // printf("hit in metadata cache, ppn %d\n", ppn);
                     pkt->comprMetaDataMap[ppn] = mcache.find(memory_addr);
-                    printf("the metadata is :\n");
-                    for (int k = 0; k < 64; k++) {
-                        printf("%02x",static_cast<unsigned>(pkt->comprMetaDataMap[ppn][k]));
+                    // printf("the metadata is :\n");
+                    // for (int k = 0; k < 64; k++) {
+                    //     printf("%02x",static_cast<unsigned>(pkt->comprMetaDataMap[ppn][k]));
 
-                    }
-                    printf("\n");
+                    // }
+                    // printf("\n");
 
 
                     entryCnt++;
