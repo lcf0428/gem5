@@ -586,7 +586,7 @@ class MemCtrl : public qos::MemCtrl
           // }
           // printf("\n");
           // printf("@mcache the capacity of cache is %d\n", _capacity);
-          
+
           assert(val.size() == 64);
           if (hmap.count(addr) != 0) {
             ListNode* cur = hmap[addr];

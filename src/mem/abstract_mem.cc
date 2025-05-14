@@ -774,7 +774,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 uint64_t ppn = addr >> 12;
                 uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
 
-                
+
                 assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
                 std::vector<uint8_t> metaData = metaDataMap[ppn];
 
@@ -817,13 +817,13 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                     // printf("mPageBuffer: \n");
                     // for (int k = 0; k < 64; k++) {
                     //     printf("%02x",static_cast<unsigned>(mPageBuffer[k]));
-        
+
                     // }
                     // printf("\n");
                     // printf("metadata: \n");
                     // for (int k = 0; k < 64; k++) {
                     //     printf("%02x",static_cast<unsigned>(metaData[k]));
-        
+
                     // }
                     // printf("\n");
                     for (int temp = 0; temp < metaData.size(); temp++) {
@@ -1700,7 +1700,7 @@ AbstractMemory::restoreData(std::vector<uint8_t>& cacheLine, uint8_t type) {
     }
 }
 
-void 
+void
 AbstractMemory::setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type) {
     assert(type < 4);
     int startPos = (2 + 32) * 8 + index * 2;
