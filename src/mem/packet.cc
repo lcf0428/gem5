@@ -532,4 +532,73 @@ Packet::getHtmTransactionUid() const
     return htmTransactionUid;
 }
 
+void 
+Packet::configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p)
+{
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC(total_size);
+    setPayload(p);
+    allocateForMC();
+    setType(readCompressed); 
+}
+
+void
+Packet::configAsReadUncompress(const Addr& addr, PacketPtr p)
+{
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC(4096);   // read the whole page (4kB)
+    setPayload(p);
+    allocateForMC();
+    setType(readUncompressed);
+}
+
+void
+Packet::configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page)
+{
+    setAddr(addr);
+    setWriteCmd();
+    setSizeForMC(total_size);
+    setPayload(p);
+    allocateForMC();
+    setType(writeCompressed);
+    for (unsigned int i = 0; i < total_size; i++) {
+        data[i] = page[i];
+    }
+}
+
+void
+Packet::configAsWriteUncompress(const Addr& addr, PacketPtr p, std::vector<uint8_t>& page) {
+    setAddr(addr);
+    setWriteCmd();
+    setSizeForMC(4096);
+    setPayload(p);
+    allocateForMC();
+    setType(writeUncompressed);
+    for (unsigned int i = 0; i < 4096; i++) {
+        data[i] = page[i];
+    }
+}
+
+void
+Packet::configAsReadCTE(const Addr& addr, PacketPtr p) {
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC();
+    allocateForMC();
+    setPayload(p);
+    setType(readCTE);
+}
+
+void
+Packet::configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size) {
+    setWriteCmd();
+    setAddr(addr);
+    setSizeForMC(size);
+    allocateForMC();
+    setPayload(p);
+    setType(writeCTE);
+}
+
 } // namespace gem5

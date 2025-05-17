@@ -51,6 +51,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <zlib.h>
+#include <algorithm>
 
 #include "base/callback.hh"
 #include "base/statistics.hh"
@@ -59,6 +61,9 @@
 #include "mem/qport.hh"
 #include "params/MemCtrl.hh"
 #include "sim/eventq.hh"
+
+constexpr size_t PAGE_SIZE = 4096;  // 4KB
+constexpr size_t COMPRESSED_BUFFER_SIZE = PAGE_SIZE + (PAGE_SIZE / 100) + 12; 
 
 namespace gem5
 {
@@ -322,6 +327,8 @@ class MemCtrl : public qos::MemCtrl
      */
     bool readQueueFull(unsigned int pkt_count) const;
 
+    bool expectReadQueueFull(unsigned int pkt_count) const;
+
     /**
      * Check if the write queue has room for more entries
      *
@@ -329,6 +336,8 @@ class MemCtrl : public qos::MemCtrl
      * @return true if write queue is full, false otherwise
      */
     bool writeQueueFull(unsigned int pkt_count) const;
+
+    bool expectWriteQueueFull(unsigned int pkt_count) const;
 
     /**
      * When a new read comes in, first check if the write q has a
@@ -351,6 +360,9 @@ class MemCtrl : public qos::MemCtrl
     bool addToReadQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
+    bool addToReadQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
+                        MemInterface* mem_intr);
+
     /**
      * Decode the incoming pkt, create a mem_pkt and push to the
      * back of the write queue. \If the write q length is more than
@@ -366,6 +378,9 @@ class MemCtrl : public qos::MemCtrl
                          MemInterface* mem_intr);
 
     bool addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
+                         MemInterface* mem_intr);
+
+    void addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
                          MemInterface* mem_intr);
 
     /**
@@ -395,6 +410,8 @@ class MemCtrl : public qos::MemCtrl
     virtual void accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
 
+    virtual void accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
+                                                MemInterface* mem_intr);
     /**
      * Determine if there is a packet that can issue.
      *
@@ -694,6 +711,35 @@ class MemCtrl : public qos::MemCtrl
 
     bool blockedForCompr;
 
+    /* necessary variables for dyLeCT */
+    uint8_t accessCnt; //  Once every 100 memory requests, update the recencyList. Then reset the accessCnt
+
+    uint8_t potentialRecycle;
+
+    std::list<PPN> recencyList;                 // use the PPN to refer to a certain page (page id)
+    std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
+    std::list<uint64_t> moderateFreeList;       // the free list for the 512B memory block
+    std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block 
+    uint64_t startAddrForCTE;
+    uint64_t startAddrForPreGather;
+    uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter 
+    uint64_t freeListThreshold;   // once the capacity of freeList is less than this threshold (e.g. 16MB), start to compress the page
+
+    std::vector<uint8_t> pageBufferForDyL;
+
+    uint64_t expectReadQueueSize;
+    uint64_t expectWriteQueueSize;
+
+    std::vector<uint8_t> compressPage(const uint8_t* inputData, size_t inputSize);
+
+    std::vector<uint8_t> decompressPage(const uint8_t* compresseData, size_t compressedSize);
+
+    bool compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_intr);
+
+    void timingAccessForDyL(PacketPtr pkt, MemInterface* mem_intr);
+
+    /* ======= end for dyLeCT ======= */
+
     virtual AddrRangeList getAddrRanges();
 
     /**
@@ -980,12 +1026,15 @@ class MemCtrl : public qos::MemCtrl
     virtual bool recvTimingReq(PacketPtr pkt);
     bool recvTimingReqLogic(PacketPtr pkt);
     bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
+    bool recvTimingReqLogicForDyL(PacketPtr pkt);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
+    bool recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
 
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
+    Tick recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
 
     /* ====== useful functions for compresso implementation =====*/
     uint8_t getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
@@ -1024,9 +1073,9 @@ class MemCtrl : public qos::MemCtrl
 
     void recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uint8_t cacheLineIdx, std::vector<uint8_t>& metaData, MemInterface* mem_intr);
 
-    std::vector<uint8_t> compress(const std::vector<uint8_t>& cacheLine);
+    std::vector<uint8_t> compressForCompr(const std::vector<uint8_t>& cacheLine);
 
-    void decompress(std::vector<uint8_t>& data);
+    void decompressForCompr(std::vector<uint8_t>& data);
 
     std::pair<uint64_t, std::vector<uint16_t>> BDXTransform(const std::vector<uint8_t>& origin);
 

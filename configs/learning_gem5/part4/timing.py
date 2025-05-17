@@ -63,13 +63,17 @@ binary = os.path.join(
     thispath,
     "../../../",
     # "tests/test-progs/hello/bin/x86/linux/hello",
-    "../../Mibench/mibench/automotive/basicmath/basicmath_small",
+    # "tests/test-progs/threads/bin/x86/linux/threads",   
+    # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
+    # "../../Mibench/mibench/security/sha/sha",
+    "../../Mibench/mibench/office/stringsearch/search_large",
 )
 
 system.workload = SEWorkload.init_compatible(binary)
 
 # 创建进程
 process = Process()
+# process.cmd = [binary, "../../Mibench/mibench/security/sha/runme_large.sh"]
 process.cmd = [binary]
 system.cpu.workload = process
 system.cpu.createThreads()

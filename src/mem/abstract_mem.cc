@@ -450,6 +450,7 @@ AbstractMemory::access(PacketPtr pkt)
         }
 
         // printf("Atomic read marker: ");
+        // printf("marker:%lx\n", pkt);
         // printf("Timing read marker: ");
         // uint8_t* start = pkt->getPtr<uint8_t>();
         // for (int ts = 0; ts < pkt->getSize(); ts++) {
@@ -476,6 +477,7 @@ AbstractMemory::access(PacketPtr pkt)
             if (pmemAddr) {
 
                 // printf("Atomic write marker: ");
+                // printf("marker:%lx\n", pkt);
                 // printf("Timing write marker: ");
                 // uint8_t* start = pkt->getPtr<uint8_t>();
                 // for (int ts = 0; ts < pkt->getSize(); ts++) {
@@ -778,6 +780,13 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
                 std::vector<uint8_t> metaData = metaDataMap[ppn];
 
+                // printf("the ppn %d metadata is: \n", ppn);
+                // for (int k = 0; k < 64; k++) {
+                //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                // }
+                // printf("\n");
+
                 uint8_t type = getType(metaData, cacheLineIdx);
 
                 std::vector<uint8_t> cacheLine(64, 0);
@@ -872,6 +881,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                         if (pmemAddr) {
                            if (type == 3) {
                             //    printf("type = 3 \n");
+                            //    printf("host address %lx\n", reinterpret_cast<uint64_t>(host_addr));
                                std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
                                test_size = cacheLine.size();
                            } else {

@@ -296,6 +296,7 @@ class Packet : public Printable, public Extensible<Packet>
   public:
     typedef uint32_t FlagsType;
     typedef gem5::Flags<FlagsType> Flags;
+    typedef uint32_t PacketTypeForDyL;
     typedef uint32_t PacketType;
 
   private:
@@ -556,7 +557,6 @@ class Packet : public Printable, public Extensible<Packet>
         writeForCompress        = 0x00000020
     };
 
-
     /// enable encaptulate
     PacketPtr comprBackup;
 
@@ -569,7 +569,32 @@ class Packet : public Printable, public Extensible<Packet>
     Tick comprTick;
 
     bool comprIsReady;
+
+    bool comprIsProc;
     /* ===== end for compresso ===== */
+
+
+    /* ===== special for DyLeCT ===== */
+    enum : PacketTypeForDyL
+    {
+        regular                 = 0x00000001,
+        readCompressed          = 0x00000002,
+        writeUncompressed       = 0x00000004,
+        readUncompressed        = 0x00000008,
+        writeCompressed         = 0x00000010,
+        readCTE                 = 0x00000020,
+        writeCTE                = 0x00000040
+    };
+
+    /// only used for the metadata read/write
+    PacketPtr DyLCandidate;
+
+    /// store the original physical address
+    Addr DyLBackup;
+
+    /// PacketType
+    PacketTypeForDyL DyLPType;
+    /* ===== end for DyLeCT ===== */
 
     /**
      * Push a new sender state to the packet and make the current
@@ -910,7 +935,10 @@ class Packet : public Printable, public Extensible<Packet>
            headerDelay(0), snoopDelay(0),
            payloadDelay(0), senderState(NULL),
            comprBackup(nullptr), comprPType(origin),
-           comprIsReady(false)
+           comprIsReady(false),
+           comprIsProc(false),
+           DyLCandidate(nullptr), DyLBackup(0),
+           DyLPType(regular)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -953,7 +981,10 @@ class Packet : public Printable, public Extensible<Packet>
            headerDelay(0),
            snoopDelay(0), payloadDelay(0), senderState(NULL),
            comprBackup(nullptr), comprPType(origin),
-           comprIsReady(false)
+           comprIsReady(false),
+           comprIsProc(false),
+           DyLCandidate(nullptr), DyLBackup(0),
+           DyLPType(regular)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -986,7 +1017,10 @@ class Packet : public Printable, public Extensible<Packet>
            payloadDelay(pkt->payloadDelay),
            senderState(pkt->senderState),
            comprBackup(nullptr), comprPType(origin),
-           comprIsReady(false)
+           comprIsReady(false),
+           comprIsProc(false),
+           DyLCandidate(nullptr), DyLBackup(0),
+           DyLPType(regular)
     {
         if (!clear_flags)
             flags.set(pkt->flags & COPY_FLAGS);
@@ -1040,7 +1074,10 @@ class Packet : public Printable, public Extensible<Packet>
         comprEntryCnt(entryCnt),
         comprPType(auxiliary),
         comprTick(tick),
-        comprIsReady(false)
+        comprIsReady(false),
+        comprIsProc(false),
+        DyLCandidate(nullptr), DyLBackup(0),
+        DyLPType(regular)
     {
         flags.set(pkt->flags & COPY_FLAGS);
 
@@ -1066,7 +1103,6 @@ class Packet : public Printable, public Extensible<Packet>
                 pkt->getHtmTransactionFailedInCacheRC()
             );
         }
-        // printf("step 5 in Packet\n");
 
         // should we allocate space for data, or not, the express
         // snoops do not need to carry any data as they only serve to
@@ -1078,7 +1114,6 @@ class Packet : public Printable, public Extensible<Packet>
         } else {
             allocate();
         }
-        // printf("step 6 in Packet\n");
     }
 
     /**
@@ -1740,6 +1775,28 @@ class Packet : public Printable, public Extensible<Packet>
         // printf("enter the check if valid\n");
         assert(flags.isSet(STATIC_DATA | DYNAMIC_DATA));
     }
+
+    /* set payload id */
+    void setPayload(const PacketPtr& _p) {
+        DyLCandidate = _p;
+    }
+
+    void setType(const PacketTypeForDyL& t) { DyLPType = t; }
+
+    void setBackUp(const Addr& addr) { DyLBackup = addr; }
+
+    void configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p);
+
+    void configAsReadUncompress(const Addr& addr, PacketPtr p);
+
+    void configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page);
+
+    void configAsWriteUncompress(const Addr &addr, PacketPtr p, std::vector<uint8_t>& page);
+
+    void configAsReadCTE(const Addr& addr, PacketPtr p);
+
+    void configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size = 64);
+
 };
 
 } // namespace gem5
