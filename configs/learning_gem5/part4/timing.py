@@ -67,13 +67,15 @@ binary = os.path.join(
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
     # "../../Mibench/mibench/security/sha/sha",
     "../../Mibench/mibench/office/stringsearch/search_large",
+    # "../../Mibench/mibench/network/dijkstra/dijkstra_small",
 )
 
 system.workload = SEWorkload.init_compatible(binary)
 
 # 创建进程
 process = Process()
-# process.cmd = [binary, "../../Mibench/mibench/security/sha/runme_large.sh"]
+# process.cmd = [binary, "../../Mibench/mibench/security/sha/input_large.asc"]
+# process.cmd = [binary, "../../Mibench/mibench/network/dijkstra/input.dat"]
 process.cmd = [binary]
 system.cpu.workload = process
 system.cpu.createThreads()

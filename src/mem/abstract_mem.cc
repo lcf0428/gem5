@@ -53,6 +53,20 @@
 namespace gem5
 {
 
+    bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
+        // uintptr_t target_addr = 0x13f958; 
+        // pkt_size = 4096;
+        // start_addr = (start_addr >> 12) << 12;
+        // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
+        // if (type == 0) {
+        //     return true;
+        // } else {
+        //     return false;
+        // }
+        return false;
+        // return true;
+    }
+
 namespace memory
 {
 
@@ -449,14 +463,17 @@ AbstractMemory::access(PacketPtr pkt)
             pkt->setData(host_addr);
         }
 
-        // printf("Atomic read marker: ");
-        // printf("marker:%lx\n", pkt);
-        // printf("Timing read marker: ");
-        // uint8_t* start = pkt->getPtr<uint8_t>();
-        // for (int ts = 0; ts < pkt->getSize(); ts++) {
-        //    printf("%02x ", static_cast<unsigned int>(start[ts]));
-        // }
-        // printf("\n");
+        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
+            // printf("Atomic read marker: ");
+            printf("marker:%lx\n", pkt);
+            printf("Timing read marker: ");
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+               printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+            fflush(stdout);
+        }
 
         TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
         if (collectStats) {
@@ -476,14 +493,17 @@ AbstractMemory::access(PacketPtr pkt)
         if (writeOK(pkt)) {
             if (pmemAddr) {
 
-                // printf("Atomic write marker: ");
-                // printf("marker:%lx\n", pkt);
-                // printf("Timing write marker: ");
-                // uint8_t* start = pkt->getPtr<uint8_t>();
-                // for (int ts = 0; ts < pkt->getSize(); ts++) {
-                //    printf("%02x ", static_cast<unsigned int>(start[ts]));
-                // }
-                // printf("\n");
+                if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
+                    // printf("Atomic write marker: ");
+                    printf("marker:%lx\n", pkt);
+                    printf("Timing write marker: ");
+                    uint8_t* start = pkt->getPtr<uint8_t>();
+                    for (int ts = 0; ts < pkt->getSize(); ts++) {
+                    printf("%02x ", static_cast<unsigned int>(start[ts]));
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                }
 
                 pkt->writeData(host_addr);
                 DPRINTF(MemoryAccess, "%s write due to %s\n",
@@ -499,6 +519,143 @@ AbstractMemory::access(PacketPtr pkt)
     } else {
         panic("Unexpected packet %s", pkt->print());
     }
+
+    if (pkt->needsResponse()) {
+        pkt->makeResponse();
+    }
+}
+
+void
+AbstractMemory::accessForDyL(PacketPtr pkt)
+{
+    if (pkt->cacheResponding()) {
+        DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
+                pkt->getAddr());
+        return;
+    }
+
+    if (pkt->cmd == MemCmd::CleanEvict || pkt->cmd == MemCmd::WritebackClean) {
+        DPRINTF(MemoryAccess, "CleanEvict  on 0x%x: not responding\n",
+                pkt->getAddr());
+      return;
+    }
+
+    assert(pkt->getAddrRange().isSubset(range));
+
+    uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+    if (pkt->cmd == MemCmd::SwapReq) {
+        if (pkt->isAtomicOp()) {
+            if (pmemAddr) {
+                pkt->setData(host_addr);
+                (*(pkt->getAtomicOp()))(host_addr);
+            }
+        } else {
+            std::vector<uint8_t> overwrite_val(pkt->getSize());
+            uint64_t condition_val64;
+            uint32_t condition_val32;
+
+            panic_if(!pmemAddr, "Swap only works if there is real memory " \
+                     "(i.e. null=False)");
+
+            bool overwrite_mem = true;
+            // keep a copy of our possible write value, and copy what is at the
+            // memory address into the packet
+            pkt->writeData(&overwrite_val[0]);
+            pkt->setData(host_addr);
+
+            if (pkt->req->isCondSwap()) {
+                if (pkt->getSize() == sizeof(uint64_t)) {
+                    condition_val64 = pkt->req->getExtraData();
+                    overwrite_mem = !std::memcmp(&condition_val64, host_addr,
+                                                 sizeof(uint64_t));
+                } else if (pkt->getSize() == sizeof(uint32_t)) {
+                    condition_val32 = (uint32_t)pkt->req->getExtraData();
+                    overwrite_mem = !std::memcmp(&condition_val32, host_addr,
+                                                 sizeof(uint32_t));
+                } else
+                    panic("Invalid size for conditional read/write\n");
+            }
+
+            if (overwrite_mem)
+                std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
+
+            assert(!pkt->req->isInstFetch());
+            TRACE_PACKET("Read/Write");
+            if (collectStats) {
+                stats.numOther[pkt->req->requestorId()]++;
+            }
+        }
+    } else if (pkt->isRead()) {
+        assert(!pkt->isWrite());
+        if (pkt->isLLSC()) {
+            assert(!pkt->fromCache());
+            // if the packet is not coming from a cache then we have
+            // to do the LL/SC tracking here
+            trackLoadLocked(pkt);
+        }
+        if (pmemAddr) {
+            pkt->setData(host_addr);
+        }
+
+        if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0)) {
+            // printf("Atomic read marker: ");
+            printf("marker:%lx\n", pkt);
+            printf("Timing read marker: ");
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+               printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+            fflush(stdout);
+        }
+
+        TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
+        if (collectStats) {
+            stats.numReads[pkt->req->requestorId()]++;
+            stats.bytesRead[pkt->req->requestorId()] += pkt->getSize();
+            if (pkt->req->isInstFetch()) {
+                stats.bytesInstRead[pkt->req->requestorId()] += pkt->getSize();
+            }
+        }
+    } else if (pkt->isInvalidate() || pkt->isClean()) {
+        assert(!pkt->isWrite());
+        // in a fastmem system invalidating and/or cleaning packets
+        // can be seen due to cache maintenance requests
+
+        // no need to do anything
+    } else if (pkt->isWrite()) {
+        if (writeOK(pkt)) {
+            if (pmemAddr) {
+
+                if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0)) {
+                    // printf("Atomic write marker: ");
+                    printf("marker:%lx\n", pkt);
+                    printf("Timing write marker: ");
+                    uint8_t* start = pkt->getPtr<uint8_t>();
+                    for (int ts = 0; ts < pkt->getSize(); ts++) {
+                    printf("%02x ", static_cast<unsigned int>(start[ts]));
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                }
+
+                pkt->writeData(host_addr);
+                DPRINTF(MemoryAccess, "%s write due to %s\n",
+                        __func__, pkt->print());
+            }
+            assert(!pkt->req->isInstFetch());
+            TRACE_PACKET("Write");
+            if (collectStats) {
+                stats.numWrites[pkt->req->requestorId()]++;
+                stats.bytesWritten[pkt->req->requestorId()] += pkt->getSize();
+            }
+        }
+    } else {
+        panic("Unexpected packet %s", pkt->print());
+    }
+
+    pkt->setAddr(pkt->DyLBackup);
 
     if (pkt->needsResponse()) {
         pkt->makeResponse();
@@ -628,19 +785,25 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
             // printf("Abstract Memory Line %d: the first byte of metaData is %X\n", __LINE__, static_cast<unsigned int>(metaData[0]));
 
             // printf("Abstract Memory Line %d: the ppn is %lld, the pageNum is %lld\n", __LINE__, ppn, pageNum);
-            // printf("the pageNum is %d\n", ppn);
-            // printf("the metadata is :\n");\
-            // for (int k = 0; k < 64; k++) {
-            //     printf("%02x",static_cast<unsigned>(metaData[k]));
 
-            // }
-            // printf("\n");
+            if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                printf("the pageNum is %d\n", ppn);
+                printf("the metadata is :\n");\
+                for (int k = 0; k < 64; k++) {
+                    printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                }
+                printf("\n");
+            }
+
 
             uint8_t type = getType(metaData, cacheLineIdx);
             std::vector<uint8_t> cacheLine(64, 0);
 
             if (pageNum == ppn) {
-                // printf("pageBuffer hit\n");
+                if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                   printf("pageBuffer hit\n"); 
+                }
                 assert(mPageBuffer.size() == metaData.size());
                 for (int temp = 0; temp < metaData.size(); temp++) {
                     assert(mPageBuffer[temp] == metaData[temp]);
@@ -696,14 +859,17 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 restoreData(cacheLine, type);
                 assert(cacheLine.size() == 64);
 
-                // printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
-                // for (int u = 0; u < 8; u++) {
-                //    for (int v = 0; v < 8; v++) {
-                //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
-                //    }
-                //    printf("\n");
-                // }
-                // printf("\n");
+                if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                    printf("the real address is 0x%lx\n", reinterpret_cast<uint64_t>(real_addr));
+                    printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
+                    for (int u = 0; u < 8; u++) {
+                       for (int v = 0; v < 8; v++) {
+                           printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                       }
+                       printf("\n");
+                    }
+                    printf("\n");
+                }
 
                 uint8_t loc = addr & 0x3F;
                 uint64_t ofs = addr - pkt->getAddr();
@@ -723,14 +889,15 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
         // }
         // printf("\n");
 
-        if (pkt->getPType() == 0x2) {
-            // printf("marker:%lx\n", pkt);
-            // printf("Timing read marker: ");
-            // uint8_t* start = pkt->getPtr<uint8_t>();
-            // for (int ts = 0; ts < pkt->getSize(); ts++) {
-            //     printf("%02x ", static_cast<unsigned int>(start[ts]));
-            // }
-            // printf("\n");
+        if (pkt->getPType() == 0x2 && isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
+            printf("marker:%lx\n", pkt);
+            printf("Timing read marker: ");
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+            fflush(stdout);
         }
 
         TRACE_PACKET(real_recv_pkt->req->isInstFetch() ? "IFetch" : "Read");
@@ -762,14 +929,15 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
             // }
             // printf("\n");
 
-            if (pkt->getPType() == 0x2) {
-                // printf("marker:%lx\n", pkt);
-                // printf("Timing write marker: ");
-                // uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
-                // for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
-                //    printf("%02x ", static_cast<unsigned int>(start[ts]));
-                // }
-                // printf("\n");
+            if (pkt->getPType() == 0x2 && isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
+                printf("marker:%lx\n", pkt);
+                printf("Timing write marker: ");
+                uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+                   printf("%02x ", static_cast<unsigned int>(start[ts]));
+                }
+                printf("\n");
+                fflush(stdout);
             }
 
             for (unsigned int i = 0; i < pkt_count; i++) {
@@ -780,12 +948,15 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
                 std::vector<uint8_t> metaData = metaDataMap[ppn];
 
-                // printf("the ppn %d metadata is: \n", ppn);
-                // for (int k = 0; k < 64; k++) {
-                //     printf("%02x",static_cast<unsigned>(metaData[k]));
 
-                // }
-                // printf("\n");
+                if(isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                    printf("the ppn %d metadata is: \n", ppn);
+                    for (int k = 0; k < 64; k++) {
+                        printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                    }
+                    printf("\n");
+                }
 
                 uint8_t type = getType(metaData, cacheLineIdx);
 
@@ -795,14 +966,17 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
                 pkt->writeDataForMC(cacheLine.data(), ofs, 64);
 
-                // printf("Abstract Memory Line %d: write the pkt data\n", __LINE__);
-                // for (int u = 0; u < 8; u++) {
-                //    for (int v = 0; v < 8; v++) {
-                //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
-                //    }
-                //    printf("\n");
-                // }
-                // printf("\n");
+                if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                    printf("Abstract Memory Line %d: write the pkt data\n", __LINE__);
+                    for (int u = 0; u < 8; u++) {
+                       for (int v = 0; v < 8; v++) {
+                           printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                       }
+                       printf("\n");
+                    }
+                    printf("\n");
+                }
+
 
                 /* compress the cacheline */
                 std::vector<uint8_t> compressed = compress(cacheLine);
@@ -821,7 +995,9 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 // printf("cacheline idx is %d\n", cacheLineIdx);
 
                 if (pageNum == ppn) {
-                    // printf("pageNum == ppn, pageBuffer hit, pageNum is %ld\n", pageNum);
+                    if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                        printf("pageNum == ppn, pageBuffer hit, pageNum is %ld\n", pageNum);
+                    }
                     assert(mPageBuffer.size() == metaData.size());
                     // printf("mPageBuffer: \n");
                     // for (int k = 0; k < 64; k++) {
@@ -856,7 +1032,10 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                     }
 
                     if (type != 0) {
-                        // printf("if inInflate: %d\n", inInflate);
+                        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                            printf("if inInflate: %d\n", inInflate);
+                        }
+                        
                         if (!inInflate) {
                             // printf("the compressed size is %d\n", compressed.size());
                             // printf("the space is %d\n", sizeMap[type]);
@@ -865,16 +1044,10 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
                         uint8_t* host_addr = toHostAddr(real_addr);
 
-                        // printf("the host address is 0x%llx:\n", reinterpret_cast<uint64_t>(host_addr));
-
-                        // printf("the original cacheline value is :\n");
-                        // for (int qw = 0; qw < 8; qw++) {
-                        //    for (int er = 0; er < 8; er++) {
-                        //        printf("%02x ", cacheLine[qw* 8 + er]);
-                        //    }
-                        //    printf("\n");
-                        // }
-                        // printf("\n");
+                        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
+                            // printf("the host address is 0x%llx:\n", reinterpret_cast<uint64_t>(host_addr));
+                            printf("the real address is 0x%lx\n", reinterpret_cast<uint64_t>(real_addr));
+                        }
 
 
                         uint64_t test_size = 0;
@@ -916,24 +1089,27 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
 
 void
-AbstractMemory::functionalAccess(PacketPtr pkt)
+AbstractMemory::functionalAccess(PacketPtr pkt, int mode)
 {
     assert(pkt->getAddrRange().isSubset(range));
 
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
 
+    Addr start_addr = (mode == 0)?pkt->getAddr():pkt->DyLBackup;
     if (pkt->isRead()) {
         if (pmemAddr) {
             pkt->setData(host_addr);
         }
 
         uint8_t* test_start = pkt->getPtr<uint8_t>();
-        // printf("Functional read: ");
-        // for (int u = 0; u < pkt->getSize(); u++) {
-        //     printf("%02x ", static_cast<unsigned int>(test_start[u]));
-        // }
-        // printf("\n");
-
+        if (isAddressCoveredForAM(start_addr, pkt->getSize(), 0)) {
+            printf("Functional read: ");
+            for (int u = 0; u < pkt->getSize(); u++) {
+                printf("%02x ", static_cast<unsigned int>(test_start[u]));
+            }
+            printf("\n");
+        }
+        pkt->setAddr(pkt->DyLBackup);
         TRACE_PACKET("Read");
         pkt->makeResponse();
     } else if (pkt->isWrite()) {
@@ -941,13 +1117,17 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
             pkt->writeData(host_addr);
         }
 
-        // printf("Functional write: ");
-        // uint8_t* test_start = pkt->getPtr<uint8_t>();
-        // for (int i = 0; i < pkt->getSize(); i++) {
-        //     printf("%02x ", static_cast<unsigned int>(test_start[i]));
-        // }
-        // printf("\n");
-
+        if (isAddressCoveredForAM(start_addr, pkt->getSize(), 0)) {
+            printf("Functional write: ");
+            uint8_t* test_start = pkt->getPtr<uint8_t>();
+            for (int i = 0; i < pkt->getSize(); i++) {
+                printf("%02x ", static_cast<unsigned int>(test_start[i]));
+            }
+            printf("\n");
+        }
+        if (mode == 1) {
+            pkt->setAddr(pkt->DyLBackup);
+        }
         TRACE_PACKET("Write");
         pkt->makeResponse();
     } else if (pkt->isPrint()) {

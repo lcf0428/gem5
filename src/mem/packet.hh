@@ -594,6 +594,13 @@ class Packet : public Printable, public Extensible<Packet>
 
     /// PacketType
     PacketTypeForDyL DyLPType;
+
+    /// indicate whether experience compress or decompress
+    uint8_t DyLStatus;
+
+    uint64_t compressPageId;
+
+    bool DyLOriginal;
     /* ===== end for DyLeCT ===== */
 
     /**
@@ -938,7 +945,10 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(regular)
+           DyLPType(regular),
+           DyLStatus(0),
+           compressPageId(0),
+           DyLOriginal(false)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -984,7 +994,10 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(regular)
+           DyLPType(regular),
+           DyLStatus(0),
+           compressPageId(0),
+           DyLOriginal(false)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -1020,7 +1033,10 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(regular)
+           DyLPType(regular),
+           DyLStatus(0),
+           compressPageId(0),
+           DyLOriginal(false)
     {
         if (!clear_flags)
             flags.set(pkt->flags & COPY_FLAGS);
@@ -1077,7 +1093,10 @@ class Packet : public Printable, public Extensible<Packet>
         comprIsReady(false),
         comprIsProc(false),
         DyLCandidate(nullptr), DyLBackup(0),
-        DyLPType(regular)
+        DyLPType(regular),
+        DyLStatus(0),
+        compressPageId(0),
+        DyLOriginal(false)
     {
         flags.set(pkt->flags & COPY_FLAGS);
 
@@ -1787,7 +1806,7 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p);
 
-    void configAsReadUncompress(const Addr& addr, PacketPtr p);
+    void configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId);
 
     void configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page);
 

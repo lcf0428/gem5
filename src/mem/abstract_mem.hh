@@ -350,6 +350,8 @@ class AbstractMemory : public ClockedObject
      */
     void access(PacketPtr pkt);
 
+    void accessForDyL(PacketPtr pkt);
+
     /*
      * perform an untimed memory access specially for compresso
      */
@@ -363,7 +365,7 @@ class AbstractMemory : public ClockedObject
      *
      * @param pkt Packet performing the access
      */
-    void functionalAccess(PacketPtr pkt);
+    void functionalAccess(PacketPtr pkt, int mode = 0);
 
     /*
      * perform a functional access specially for compresso

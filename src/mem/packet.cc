@@ -540,11 +540,12 @@ Packet::configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p)
     setSizeForMC(total_size);
     setPayload(p);
     allocateForMC();
-    setType(readCompressed); 
+    setType(readCompressed);
+    DyLStatus = 2;
 }
 
 void
-Packet::configAsReadUncompress(const Addr& addr, PacketPtr p)
+Packet::configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId)
 {
     setAddr(addr);
     setReadCmd();
@@ -552,6 +553,8 @@ Packet::configAsReadUncompress(const Addr& addr, PacketPtr p)
     setPayload(p);
     allocateForMC();
     setType(readUncompressed);
+    DyLStatus = 1;
+    compressPageId = pageId;
 }
 
 void

@@ -712,6 +712,22 @@ class MemCtrl : public qos::MemCtrl
     bool blockedForCompr;
 
     /* necessary variables for dyLeCT */
+    bool blockedForDyL;
+
+    uint32_t blockedNumForDyL;
+
+    std::list<PacketPtr> blockedQueueForDyL;
+
+    uint64_t pktInProcess;
+
+    std::unordered_set<PPN> pageInProcess;
+
+    std::unordered_set<PPN> pagesInDecompress;
+
+    std::unordered_set<PPN> pagesInCompress;
+
+    std::list<PacketPtr> waitForDeCompress;
+
     uint8_t accessCnt; //  Once every 100 memory requests, update the recencyList. Then reset the accessCnt
 
     uint8_t potentialRecycle;
@@ -724,8 +740,11 @@ class MemCtrl : public qos::MemCtrl
     uint64_t startAddrForPreGather;
     uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter 
     uint64_t freeListThreshold;   // once the capacity of freeList is less than this threshold (e.g. 16MB), start to compress the page
+    uint64_t recencyListThreshold;  // once the size of recencyList exceed this threshold.
 
     std::vector<uint8_t> pageBufferForDyL;
+    uint64_t decompress_latency;
+    uint64_t compress_latency;
 
     uint64_t expectReadQueueSize;
     uint64_t expectWriteQueueSize;
@@ -1026,7 +1045,7 @@ class MemCtrl : public qos::MemCtrl
     virtual bool recvTimingReq(PacketPtr pkt);
     bool recvTimingReqLogic(PacketPtr pkt);
     bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
-    bool recvTimingReqLogicForDyL(PacketPtr pkt);
+    bool recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked = false);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
@@ -1067,7 +1086,7 @@ class MemCtrl : public qos::MemCtrl
 
     Addr allocateInflateRoom(std::vector<uint8_t>& metaData, const uint8_t& index);
 
-    Addr moveForwardAtomic(std::vector<uint8_t>& metaData, const uint8_t& index, MemInterface* mem_intr);
+    Addr moveForwardAtomic(std::vector<uint8_t>& metaData, const uint8_t& index, MemInterface* mem_intr, bool needPrint=false);
 
     bool updateMetaData(std::vector<uint8_t>& compressed, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx, bool inInflateRoom, MemInterface* mem_intr);
 
