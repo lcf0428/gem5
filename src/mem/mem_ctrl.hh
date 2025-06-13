@@ -655,6 +655,9 @@ class MemCtrl : public qos::MemCtrl
           target->prev->succ = tailer;
           tailer->prev = target->prev;
           Addr addr = target->addr;
+          if (addr == 0x8cc0) {
+            printf("erase from cache\n");
+          }
           hmap.erase(addr);
           delete target;
           _sz--;
@@ -718,6 +721,12 @@ class MemCtrl : public qos::MemCtrl
 
     std::list<PacketPtr> blockedQueueForDyL;
 
+    std::list<PacketPtr> functionalBlockedQueueForDyL;
+
+    std::unordered_map<PacketPtr, Tick> delayForDecompress;
+
+    std::unordered_map<PacketPtr, std::vector<uint8_t>> decompressedPage;
+
     uint64_t pktInProcess;
 
     std::unordered_set<PPN> pageInProcess;
@@ -758,6 +767,14 @@ class MemCtrl : public qos::MemCtrl
     void timingAccessForDyL(PacketPtr pkt, MemInterface* mem_intr);
 
     /* ======= end for dyLeCT ======= */
+
+    /* ======= start for the stats ====== */
+    std::unordered_set<PPN> stat_page_used; 
+
+    uint64_t stat_used_bytes;
+
+    /* ====== end for stats ====== */
+
 
     virtual AddrRangeList getAddrRanges();
 
@@ -873,6 +890,9 @@ class MemCtrl : public qos::MemCtrl
         // per-requestor raed and write average memory access latency
         statistics::Formula requestorReadAvgLat;
         statistics::Formula requestorWriteAvgLat;
+
+        // estimate the usage of physical memory
+        statistics::Scalar usedMemoryKB;
     };
 
     CtrlStats stats;
@@ -1131,6 +1151,10 @@ class MemCtrl : public qos::MemCtrl
     void assignToQueue(PacketPtr pkt, bool recordStats = false);
     /* ====== end for compresso ====== */
 
+    /* ====== start functionality for DyLeCT ===== */
+    void afterDecompForDyL(PacketPtr pkt, MemInterface* mem_intr);
+
+    bool findSameElem(Addr addr);
 };
 
 } // namespace memory

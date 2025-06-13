@@ -54,17 +54,23 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x13f958; 
-        // pkt_size = 4096;
-        // start_addr = (start_addr >> 12) << 12;
-        // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
+        uintptr_t target_addr = 0x2e80b0; 
+        pkt_size = 4096;
+        start_addr = (start_addr >> 12) << 12;
+        return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
         // if (type == 0) {
         //     return true;
         // } else {
         //     return false;
         // }
-        return false;
+        // return false;
         // return true;
+    }
+
+    bool coverageTest(Addr start_addr, Addr target_addr, size_t pkt_size) {
+        // target_addr = 0x25cc000;
+        // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
+        return false;
     }
 
 namespace memory
@@ -542,9 +548,23 @@ AbstractMemory::accessForDyL(PacketPtr pkt)
 
     assert(pkt->getAddrRange().isSubset(range));
 
+    if (coverageTest(pkt->getAddr(), 0x25cc000, pkt->getSize())) {
+        printf("acess For DyL\n");
+        printf("recv Timing: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
+        if (pkt->isWrite()) {
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+            fflush(stdout);
+        }
+    }
+
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
 
     if (pkt->cmd == MemCmd::SwapReq) {
+        printf("have you enter this: swap req\n");
         if (pkt->isAtomicOp()) {
             if (pmemAddr) {
                 pkt->setData(host_addr);
@@ -634,7 +654,7 @@ AbstractMemory::accessForDyL(PacketPtr pkt)
                     printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
-                    printf("%02x ", static_cast<unsigned int>(start[ts]));
+                        printf("%02x ", static_cast<unsigned int>(start[ts]));
                     }
                     printf("\n");
                     fflush(stdout);
@@ -1094,6 +1114,19 @@ AbstractMemory::functionalAccess(PacketPtr pkt, int mode)
     assert(pkt->getAddrRange().isSubset(range));
 
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+    if (coverageTest(pkt->getAddr(), 0x25cc000, pkt->getSize())) {
+        printf("acess For DyL\n");
+        printf("recv Timing: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
+        if (pkt->isWrite()) {
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+            fflush(stdout);
+        }
+    }
 
     Addr start_addr = (mode == 0)?pkt->getAddr():pkt->DyLBackup;
     if (pkt->isRead()) {

@@ -840,6 +840,17 @@ void DRAMInterface::atomicRead(uint8_t* ptr, Addr addr, size_t size) {
 }
 
 void DRAMInterface::atomicWrite(const std::vector<uint8_t>& data, Addr addr, size_t size, size_t base) {
+    // if (addr <= 0x8e58 && addr + size >= 0x8e58) {
+    //     printf("atomic write addr 0x%lx\n", addr);
+    //     for (int i = 0; i < size; i++) {
+    //         if (i % 8 == 0) {
+    //             printf("\n");
+    //         }
+    //         printf("%lx ", static_cast<unsigned int>(data[i]));
+    //     }
+    //     printf("\n");
+    // }
+    
     // printf("@dram interface   atomic Write\n");
     assert(pmemAddr);
     uint8_t *host_addr = toHostAddr(addr);
