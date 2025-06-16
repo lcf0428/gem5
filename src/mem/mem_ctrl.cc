@@ -52,21 +52,20 @@
 #include "sim/system.hh"
 
 #define ALIGN(x) (((x + 4095) >> 12) << 12)
-
 namespace gem5
 {
 
     bool isAddressCovered(uintptr_t start_addr, size_t pkt_size, int type) {
-        uintptr_t target_addr = 0x2e80b0;
-        pkt_size = 4096;
-        start_addr = (start_addr >> 12) << 12;
-        return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
+        // uintptr_t target_addr = 0x2e80b0;
+        // pkt_size = 4096;
+        // start_addr = (start_addr >> 12) << 12;
+        // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
         // if (type == 0) {
         //     return true;
         // } else {
         //     return false;
         // }
-        // return false;
+        return false;
         // return true;
     }
 
@@ -90,7 +89,7 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     respondEvent([this] {processRespondEvent(dram, respQueue,
                          respondEvent, retryRdReq); }, name()),
     dram(p.dram),
-    globalPredictor(0), mcache(MetaCache(64)),
+    globalPredictor(0), mcache(MetaCache(64 * 64)),
     sizeMap(std::vector<uint8_t>(4)),
     hasBuffered(false), pageNum(0),
     mPageBuffer(std::vector<uint8_t>(64)),
@@ -99,6 +98,9 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     readBufferSizeForCompr(dram->readBufferSize),
     writeBufferSizeForCompr(dram->writeBufferSize),
     blockedForCompr(false),
+    typeOneBlock(0),
+    typeTwoBlock(0),
+    recordForCheckReady(false),
     blockedForDyL(false), blockedNumForDyL(0),
     pktInProcess(0),
     accessCnt(0),
@@ -107,9 +109,10 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     startAddrForPreGather(0),
     startAddrForCnt(0),
     pageBufferForDyL(std::vector<uint8_t>(64)),
-    decompress_latency(260000000), compress_latency(250000000),
+    decompress_latency(277000), compress_latency(662000),
     expectReadQueueSize(0),
     expectWriteQueueSize(0),
+    stat_used_bytes(0), stat_max_used_bytes(0),
     readBufferSize(dram->readBufferSize),
     writeBufferSize(dram->writeBufferSize),
     writeHighThreshold(writeBufferSize * p.write_high_thresh_perc / 100.0),
@@ -191,7 +194,7 @@ MemCtrl::init()
             freeList.emplace_back(addr);
         }
         freeListThreshold = (16 * 1024) / 4;  // set the threshold to be 16 MiB  <=>  the freelist should at least be (16 * 1024) / 4 length
-        recencyListThreshold = 10;
+        recencyListThreshold = 120;
         printf("Inital: the size of freeList is %ld\n", freeList.size());
     }
 
@@ -2213,6 +2216,8 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             assert(blockedForCompr == false);
             blockedForCompr = true;
             PacketPtr readForCompress = new Packet(pkt, pkt->comprTick - 1);
+            // printf("set the blocked for compr to true due to page overflow, the readForCompress is 0x%lx\n", reinterpret_cast<unsigned long>(readForCompress));
+            typeOneBlock += 1;
             readForCompress->configAsReadForCompress(pkt->comprMetaDataMap[overflowPageNum], overflowPageNum);
 
             DPRINTF(MemCtrl, "(pkt) Line %d, the readForCompress pkt %lx\n", __LINE__, readForCompress);
@@ -2453,6 +2458,9 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
     } else if (pkt->getPType() == 0x20){
         /* pkt is writeForCompress */
         assert(isEligible(pkt));
+        // printf("the pkt is 0x%lx\n", reinterpret_cast<unsigned long>(pkt));
+        fflush(stdout);
+
         assert(blockedForCompr);
 
         assert((pkt->getAddr() & 0xFFF) == 0);
@@ -2679,7 +2687,11 @@ MemCtrl::addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
             DPRINTF(MemCtrl, "Line %d: current pkt is writeUncompress\n", __LINE__);
             PacketPtr origin_pkt = pkt->DyLCandidate;
             PPN origin_ppn = (origin_pkt->DyLBackup) >> 12;
-            assert(pagesInDecompress.find(origin_ppn) != pagesInDecompress.end());
+            if (pagesInDecompress.find(origin_ppn) == pagesInDecompress.end()) {
+                printf("the address of origin_pkt is 0x%lx\n", reinterpret_cast<unsigned long>(origin_pkt));
+                printf("error: find origin ppn %d not in Decompress\n", origin_ppn);
+                panic("Fetal Error");
+            }
             pagesInDecompress.erase(origin_ppn);
             /* translate the dram address */
             Addr addr = pkt->getAddr();
@@ -2859,6 +2871,8 @@ MemCtrl::recvTimingReqLogic(PacketPtr pkt) {
     }
     prevArrival = curTick();
 
+    recvLastPkt = curTick();
+
     panic_if(!(dram->getAddrRange().contains(pkt->getAddr())),
              "Can't handle address range for packet %s\n", pkt->print());
 
@@ -2874,7 +2888,7 @@ MemCtrl::recvTimingReqLogic(PacketPtr pkt) {
 
     PPN page_num = (pkt->getAddr() >> 12);
     stat_page_used.insert(page_num);
-    stats.usedMemoryKB = stat_page_used.size() * 4;
+    stats.usedMemoryByte = stat_page_used.size() * 4096;
 
     // run the QoS scheduler and assign a QoS priority value to the packet
     qosSchedule( { &readQueue, &writeQueue }, burst_size, pkt);
@@ -3003,6 +3017,8 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
 
     DPRINTF(MemCtrl, "finish the Qos scheduler\n");
 
+    recvLastPkt = curTick();
+
     /* refuse the pkt is exceed the buffer size */
     assert(size != 0);
     if (pkt->isWrite()) {
@@ -3038,7 +3054,9 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
                     isZero = true;
                 }
             }
+            // if (false) {
             if ((pkt_count == 1) && (pageNum != ppn) && isZero) {
+                // printf("have you enter this?\n");
                 bool needsResponse = pkt->needsResponse();
                 std::vector<uint8_t> allZero(pkt->getSize(), 0);
                 pkt->setDataForMC(allZero.data(), 0, pkt->getSize());
@@ -3116,6 +3134,8 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
     } else {
         assert(!blockedForDyL);
     }
+
+    recvLastPkt = curTick();
 
     panic_if(!(dram->getAddrRange().contains(pkt->getAddr())),
             "Can't handle address range for packet %s\n", pkt->print());
@@ -3230,6 +3250,7 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
 
             recencyList.remove(ppn);
             recencyList.push_front(ppn);
+            // printf("size of recencyList is %d\n", recencyList.size());
 
             if (recencyList.size() > recencyListThreshold) {
                 assert(blockedForDyL == false);
@@ -3332,8 +3353,10 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                 fflush(stdout);
             }
 
+
             recencyList.remove(ppn);
             recencyList.push_front(ppn);
+            // printf("size of recencyList is %d\n", recencyList.size());
             // pageInProcess.insert(ppn);
             if (recencyList.size() > recencyListThreshold) {
                 assert(blockedForDyL == false);
@@ -3656,8 +3679,12 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         //     printf("if ready: %d, pkt type is %d, address is %lx\n", wait_pkt->comprIsReady, wait_pkt->getPType(), reinterpret_cast<uint64_t>(wait_pkt));
         // }
         // printf("===================================================\n");
-        waitQueue.erase(pkt);
-        checkForReadyPkt();
+        if (recordForCheckReady == false) {
+            waitQueue.erase(pkt);
+            checkForReadyPkt();
+        } else {
+            to_delete_pkt.emplace_back(pkt);
+        }
 
         // printf("after erase the current pkt, the waitQueue size is %d\n", waitQueue.size());
 
@@ -3720,6 +3747,8 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             // flush the pageBuffer in memory
             blockedForCompr = true;
             PacketPtr writeForCompress = new Packet(pkt, auxPkt->comprTick - 1);
+            // printf("[2] set the blockedForCompr to true, create a writeForCompress 0x%lx\n", reinterpret_cast<unsigned long>(writeForCompress));
+            typeTwoBlock += 1;
             DPRINTF(MemCtrl, "(pkt) Line %d, the writeForCompress pkt %lx\n", __LINE__, writeForCompress);
 
             std::vector<uint8_t> uncompressPage(4096);
@@ -3761,7 +3790,8 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
                     break;
                 }
             }
-            stats.usedMemoryKB = stat_used_bytes / 1024;
+            stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+            stats.usedMemoryByte = stat_max_used_bytes;
             // store the size of compressedPage into the control block (using 12 bit)
             uint64_t compressedSize = cPageSize;
 
@@ -3821,33 +3851,40 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         std::vector<uint8_t> newMetaData = recompressTiming(pkt);
         assert(pkt->comprTick != 0);
         PacketPtr writeForCompress = new Packet(pkt->comprBackup, pkt->comprTick);
+        printf("[1] create a writeForCompress 0x%lx due to the readForCompress 0x%lx\n", reinterpret_cast<unsigned long>(writeForCompress), reinterpret_cast<unsigned long>(pkt));
         // printf("(pkt) Line %d, the writeForCompress pkt %lx\n", __LINE__, writeForCompress);
         DPRINTF(MemCtrl, "(pkt) Line %d, the writeForCompress pkt %lx\n", __LINE__, reinterpret_cast<uint64_t>(writeForCompress));
         uint8_t* start_addr = pkt->getPtr<uint8_t>();
         writeForCompress->configAsWriteForCompress(start_addr, ppn);
         writeForCompress->comprMetaDataMap[ppn] = newMetaData;
 
-        /* readForCompress has finished its life time */
-        waitQueue.erase(pkt);
-
-        /* add the writeForCompress to the waitQueue */
-        waitQueue.insert(writeForCompress);
-
         // TODO2: right now just instantly update the metadata in memory
         // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
         mcache.add(ppn * 64, newMetaData);
         mem_intr->atomicWrite(newMetaData, ppn * 64, 64);
         DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
-        updateSubseqMetaData(writeForCompress, ppn); //TODO
-
-        assignToQueue(writeForCompress);
-
+        updateSubseqMetaData(writeForCompress, ppn); 
+        
+        /* readForCompress has finished its life time */
+        if (recordForCheckReady == false) {
+            printf("record is false\n");
+            waitQueue.erase(pkt);
+            /* add the writeForCompress to the waitQueue */
+            waitQueue.insert(writeForCompress);
+            assignToQueue(writeForCompress);
+        } else {
+            printf("record is true\n");
+            assert(writeForCompress->comprIsProc == false && writeForCompress->comprIsReady);
+            to_delete_pkt.emplace_back(pkt);
+            to_add_pkt.emplace_back(writeForCompress);
+        }
+        
     } else if (pType == 0x20) {
         /* writeForCompress */
         // printf("enter the accessForCompr\n");
         assert(pkt->getSize() == 4096);
         PacketPtr backup_pkt = pkt->comprBackup;
-        PPN PPNFORTEST = pkt->getAddr() >> 12;
+        // PPN PPNFORTEST = pkt->getAddr() >> 12;
         // DPRINTF(MemCtrl, "the ppn %d metadata is: \n", PPNFORTEST);
         // for (int k = 0; k < 64; k++) {
         //     printf("%02x",static_cast<unsigned>(pkt->comprMetaDataMap[PPNFORTEST][k]));
@@ -3862,15 +3899,26 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             if (((backup_addr + backup_size) >> 12) == backup_addr >> 12) {
                 merged = true;
             }
+            assert(typeOneBlock >= 1);
+            typeOneBlock--;
         }
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
-        waitQueue.erase(pkt);
+
+        if (recordForCheckReady == false) {
+            waitQueue.erase(pkt);
+            checkForReadyPkt();  
+        } else {
+            to_delete_pkt.emplace_back(pkt);
+        }
+        
         // printf("finish accessForCompr, pkt->comprBackup type is %d, address is 0x%lx\n", pkt->comprBackup->getPType(), reinterpret_cast<uint64_t>(pkt->comprBackup));
 
         // printf("check the backup packet type %d\n", static_cast<unsigned int>(backup_pkt->getPType()));
         if (backup_pkt->getPType() == 0x4) {
             assert(merged == false);
             /* backup is readMetaData, the writeForCompress is triggered by replace the pageBuffer */
+            assert(typeTwoBlock >= 1);
+            typeTwoBlock--;
             PacketPtr auxPkt = backup_pkt->comprBackup;
             PPN ppn = backup_pkt->getAddr() / 64;
             assert(auxPkt->comprMetaDataMap.find(ppn) != auxPkt->comprMetaDataMap.end());
@@ -3916,7 +3964,12 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             backup_pkt->setDataForMC(newData.data(), 0, new_size);
             
             mem_intr->accessForCompr(backup_pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
-            waitQueue.erase(backup_pkt);
+            if (recordForCheckReady == false) {
+                waitQueue.erase(backup_pkt);
+                checkForReadyPkt();
+            } else {
+                to_delete_pkt.emplace_back(backup_pkt);
+            }
 
             // printf("after erase the current pkt, the waitQueue size is %d\n", waitQueue.size());
 
@@ -3954,26 +4007,30 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             delete backup_pkt;
         }
 
-        blockedForCompr = false;
+        // printf("typeOneBLock is %d\n", typeOneBlock);
+        // printf("typeTwoBlock is %d\n", typeTwoBlock);
 
-        // printf("=================status of waitqueue===============\n");
-        // for (const auto& wait_pkt: waitQueue) {
-        //     printf("if ready: %d, pkt type is %d, address is %lx\n", wait_pkt->comprIsReady, wait_pkt->getPType(), reinterpret_cast<uint64_t>(wait_pkt));
-        // }
-        // printf("===================================================\n");
+        if (typeOneBlock + typeTwoBlock == 0) {
+            // printf("set the blockedForCompr to false due to the pkt 0x%lx\n", reinterpret_cast<unsigned long>(pkt));
+            blockedForCompr = false;
+            // printf("=================status of waitqueue===============\n");
+            // for (const auto& wait_pkt: waitQueue) {
+            //     printf("if ready: %d, pkt type is %d, address is %lx\n", wait_pkt->comprIsReady, wait_pkt->getPType(), reinterpret_cast<uint64_t>(wait_pkt));
+            // }
+            // printf("===================================================\n");
 
-        checkForReadyPkt();
-        /* the memory controller is no longer blocked */
-        /* reprocess the blocked pkt */
-        for (unsigned int u = 0; u < blockPktQueue.size(); u++) {
-            PacketPtr blocked_pkt = blockPktQueue[u];
-            // printf("the address is blocked pkt is %lx\n", reinterpret_cast<uint64_t>(blocked_pkt));
-            bool is_accepted = recvTimingReqLogicForCompr(blocked_pkt, true);
-            if (!is_accepted) {
-                panic("should be always accept at this moment");
+            /* the memory controller is no longer blocked */
+            /* reprocess the blocked pkt */
+            for (unsigned int u = 0; u < blockPktQueue.size(); u++) {
+                PacketPtr blocked_pkt = blockPktQueue[u];
+                // printf("the address is blocked pkt is %lx\n", reinterpret_cast<uint64_t>(blocked_pkt));
+                bool is_accepted = recvTimingReqLogicForCompr(blocked_pkt, true);
+                if (!is_accepted) {
+                    panic("should be always accept at this moment");
+                }
             }
+            blockPktQueue.clear();
         }
-        blockPktQueue.clear();
 
     } else {
         panic("unknown pkt type in accessAndRespondForCompr");
@@ -4122,10 +4179,13 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             fflush(stdout);
 
             // printf("cSize is %d\n", cSize);
+            printf("try to compress the page, cSize is %d\n", cSize);
             fflush(stdout);
             if(cSize <= 2048) {
                 Addr newAddr = 0;
                 freeList.push_back(pkt->getAddr());  // return back the freed page
+                assert(stat_used_bytes >= 4096);
+                stat_used_bytes -= 4096;
                 if (coverageTestMC(pkt->getAddr(), 0, 4096)) {
                     printf("give back freed page, address is 0x%lx\n", pkt->getAddr());
                     printf("the page number is %d\n", ppn);
@@ -4144,8 +4204,9 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                         freeList.pop_front();
                         for (int i = 1; i < 16; i++) {
                             smallFreeList.push_back(newAddr | (i << 8));
-                        }
+                        }    
                     }
+                    stat_used_bytes += 256;
                 } else if (cSize <= 512) {
                     if (moderateFreeList.size() > 0) {
                         newAddr = moderateFreeList.front();
@@ -4155,8 +4216,9 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                         freeList.pop_front();
                         for (int i = 1; i < 8; i++) {
                             moderateFreeList.push_back(newAddr | (i << 9));
-                        }
+                        }    
                     }
+                    stat_used_bytes += 512;
                 } else {
                     if (largeFreeList.size() > 0) {
                         newAddr = largeFreeList.front();
@@ -4165,7 +4227,9 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                         newAddr = freeList.front();
                         freeList.pop_front();
                         largeFreeList.push_back(newAddr | (1 << 11));
+                        
                     }
+                    stat_used_bytes += 2048;
                 }
                 // update the CTE and cache
                 /* generate a write packet for update the CTE */
@@ -4297,10 +4361,10 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 assert(freeList.size() > 0);
                 addr = freeList.front();
                 freeList.pop_front();
+                stat_used_bytes += 4096;
+                stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+                stats.usedMemoryByte = stat_max_used_bytes;
                 std::vector<uint8_t> zeroPage(4096, 0);
-                if (coverageTestMC(addr, 0x198662, 4096)) {
-                    printf("Line %d: the addr is 0x%lx, size is %d\n", __LINE__, addr, 4096);
-                }
                 mem_intr->atomicWrite(zeroPage, addr, 4096, 0);
                 cte = (1ULL << 63) | (0ULL << 62) | (((addr >> 12) & ((1ULL << 30) - 1)) << 32);
                 for (int i = (loc * 8 + 7); i >= loc * 8; i--) {
@@ -4323,42 +4387,83 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 // DPRINTF(MemCtrl, "[FL] finish allocating a page from freelist, now the size is %d\n", freeList.size());
             }
 
-            /* translate the address for the original packet */
-            Addr real_addr = addr | (origin_pkt->getAddr() & ((1ULL << 12) - 1));
-            origin_pkt->setAddr(real_addr);
-            // DPRINTF(MemCtrl, "Line %d: Finish tranlate\n", __LINE__);
-            
-            unsigned origin_offset = origin_pkt->getAddr() & (burst_size - 1);
-            uint64_t size = origin_pkt->getSize();
-            unsigned int origin_pkt_count = divCeil(origin_offset + size, burst_size);
+            if (((cte >> 62) & 0x1) == 1) {
+                /* the current page is compressed */
+                if (pagesInDecompress.find(ppn) != pagesInDecompress.end()) {
+                    waitForDeCompress.push_back(origin_pkt);
+                } else {
+                    bool sign = false;
+                    if (isAddressCovered(origin_pkt->getAddr(), 8, 1)) {
+                        printf("After read CTE: Opps, the page is compressed\n");
+                        printf("the ppn is %d\n", ppn);
+                        printf("the origin pkt is 0x%lx\n", reinterpret_cast<unsigned long>(origin_pkt));
+                    }
+                    assert(pagesInDecompress.find(ppn) == pagesInDecompress.end());
+                    assert(pagesInCompress.find(ppn) == pagesInCompress.end());
 
-            /* only when the free list have enough space, add the origin pkt to the specific queue */
-            bool sign = false;
-            if (origin_pkt->isWrite()) {
-                addToWriteQueueForDyL(origin_pkt, origin_pkt_count, dram);
-                stats.writeReqs++;
-                stats.bytesWrittenSys += size;
+                    pagesInDecompress.insert(ppn);
+                    /* the MC should issue readCompress and then writeUncompress packet to decompress the page */
+                    PacketPtr readCompress = new Packet(origin_pkt);
+                    if (isAddressCovered(origin_pkt->getAddr(), 0, 1)) {
+                        printf("create a readCompress 3: origin pkt address is 0x%lx\n", reinterpret_cast<unsigned long>(origin_pkt));
+                    }
 
-                // If we are not already scheduled to get a request out of the
-                // queue, do so now
-                if (!sign) {
-                    if (!nextReqEvent.scheduled()) {
-                        DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
-                        schedule(nextReqEvent, curTick());
+                    DPRINTF(MemCtrl, "Line %d: create a new packet for read Compress, the address is 0x%llx\n", __LINE__, (uint64_t)readCompress);
+
+                    /* read the dram address and the page size from CTE */
+                    Addr addr = ((cte >> 10) & ((1ULL << 40) - 1)) << 8;
+                    uint64_t pageSize = ((cte >> 50) & ((1ULL << 12) - 1)) + 1;   // size range [1, 2kiB]
+
+                    readCompress->configAsReadCompress(addr, pageSize, origin_pkt);
+                    unsigned rc_offset = (readCompress->getAddr()) & (burst_size - 1);
+                    unsigned int rc_pkt_count = divCeil(rc_offset + pageSize, burst_size);
+                    sign = addToReadQueueForDyL(readCompress, rc_pkt_count, dram);
+
+                    if (!sign) {
+                        if (!nextReqEvent.scheduled()) {
+                            DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
+                            schedule(nextReqEvent, curTick());
+                        }
                     }
                 }
             } else {
-                assert(origin_pkt->isRead());
-                sign = addToReadQueueForDyL(origin_pkt, origin_pkt_count, dram);
-                stats.readReqs++;
-                stats.bytesReadSys += size;
+                /* translate the address for the original packet */
+                Addr real_addr = addr | (origin_pkt->getAddr() & ((1ULL << 12) - 1));
+                origin_pkt->setAddr(real_addr);
+                // DPRINTF(MemCtrl, "Line %d: Finish tranlate\n", __LINE__);
+                
+                unsigned origin_offset = origin_pkt->getAddr() & (burst_size - 1);
+                uint64_t size = origin_pkt->getSize();
+                unsigned int origin_pkt_count = divCeil(origin_offset + size, burst_size);
 
-                if (!sign) {
+                /* only when the free list have enough space, add the origin pkt to the specific queue */
+                bool sign = false;
+                if (origin_pkt->isWrite()) {
+                    addToWriteQueueForDyL(origin_pkt, origin_pkt_count, dram);
+                    stats.writeReqs++;
+                    stats.bytesWrittenSys += size;
+
                     // If we are not already scheduled to get a request out of the
                     // queue, do so now
-                    if (!nextReqEvent.scheduled()) {
-                        DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                        schedule(nextReqEvent, curTick());
+                    if (!sign) {
+                        if (!nextReqEvent.scheduled()) {
+                            DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
+                            schedule(nextReqEvent, curTick());
+                        }
+                    }
+                } else {
+                    assert(origin_pkt->isRead());
+                    sign = addToReadQueueForDyL(origin_pkt, origin_pkt_count, dram);
+                    stats.readReqs++;
+                    stats.bytesReadSys += size;
+
+                    if (!sign) {
+                        // If we are not already scheduled to get a request out of the
+                        // queue, do so now
+                        if (!nextReqEvent.scheduled()) {
+                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
+                            schedule(nextReqEvent, curTick());
+                        }
                     }
                 }
             }
@@ -4744,6 +4849,8 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         }
     }
 
+
+
     // transition is handled by QoS algorithm if enabled
     if (turnPolicy) {
         // select bus state - only done if QoS algorithms are in use
@@ -4767,7 +4874,18 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         printf("the read size queue is %d\n", mem_intr->readQueueSize);
         printf("the blockedNum %d\n", blockedNumForDyL);
     }
-
+    
+    if (curTick() - recvLastPkt >= 5091336250) {
+        printf("QoS Turnarounds selected state %s %s\n",
+            (mem_intr->busState==MemCtrl::READ)?"READ":"WRITE",
+            switched_cmd_type?"[turnaround triggered]":"");
+        printf("the current waitQueue size is %d\n", waitQueue.size());
+        printf("the current pkt in blocked queue is %d\n", blockPktQueue.size());
+        printf("the read size queue is %d\n", mem_intr->readQueueSize);
+        printf("the blockedNum %d\n", blockedNumForDyL);
+        fflush(stdout);
+        panic("shouldn't be this long!!!!");
+    }
 
     if (switched_cmd_type) {
         if (mem_intr->busState == MemCtrl::READ) {
@@ -5281,8 +5399,8 @@ MemCtrl::CtrlStats::CtrlStats(MemCtrl &_ctrl)
                 statistics::units::Tick, statistics::units::Count>::get(),
              "Per-requestor write average memory access latency"),
         
-    ADD_STAT(usedMemoryKB, statistics::units::Count::get(),
-             "Estimated usage of physical memory (in KB)")
+    ADD_STAT(usedMemoryByte, statistics::units::Count::get(),
+             "Estimated usage of physical memory (in Byte)")
 {
 }
 
@@ -5381,7 +5499,7 @@ MemCtrl::CtrlStats::regStats()
     requestorReadAvgLat = requestorReadTotalLat / requestorReadAccesses;
     requestorWriteAvgLat = requestorWriteTotalLat / requestorWriteAccesses;
 
-    usedMemoryKB.precision(2);
+    usedMemoryByte.precision(2);
 }
 
 void
@@ -5424,7 +5542,7 @@ MemCtrl::recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr)
 
     PPN page_num = (pkt->getAddr() >> 12);
     stat_page_used.insert(page_num);
-    stats.usedMemoryKB = stat_page_used.size() * 4;
+    stats.usedMemoryByte = stat_page_used.size() * 4096;
     // printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
     if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
         // rely on the abstract memory
@@ -5504,6 +5622,7 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                             Addr chunkAddr = freeList.front();
                             DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
                             freeList.pop_front();
+                            stat_used_bytes += 512;
 
                             int chunkIdx = cur / 512;
                             uint64_t MPFN = (chunkAddr >> 9);
@@ -5515,13 +5634,14 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                             if (cur + 512 < compressedPage.size()) {
                                 mem_intr->atomicWrite(compressedPage, chunkAddr, 512, cur);
                                 cur += 512;
-                                stat_used_bytes += 512;
+                                
                             } else {
                                 mem_intr->atomicWrite(compressedPage, chunkAddr, compressedPage.size() - cur, cur);
                                 break;
                             }
                         }
-                        stats.usedMemoryKB = stat_used_bytes / 1024;
+                        stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+                        stats.usedMemoryByte = stat_max_used_bytes;
                         // store the size of compressedPage into the control block (using 12 bit)
                         uint64_t compressedSize = compressedPage.size();
 
@@ -5927,6 +6047,10 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         // printf("[F] CTE is invalid\n");
         dramAddr = freeList.front();
         freeList.pop_front();
+        stat_used_bytes += 4096;
+        stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+        stats.usedMemoryByte = stat_max_used_bytes;
+
         // update the CTE;
         cte = (1ULL << 63) | (0ULL << 62) | (((dramAddr >> 12) & ((1ULL << 30) - 1)) << 32);
         uint64_t val = cte;
@@ -5950,6 +6074,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
     recencyList.remove(ppn);
     recencyList.push_front(ppn);
+    // printf("size of recencyList is %d\n", recencyList.size());
     if (recencyList.size() > recencyListThreshold) {
         assert(pktInProcess == 0 && !blockedForDyL);
         assert(recencyList.size() == recencyListThreshold + 1);
@@ -5979,6 +6104,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
          // END
          Addr newAddr = 0;
+         printf("try to compress the page, cSize is %d\n", cSize);
          if (cSize <= 2048) {
             if (coverageTestMC(pagePtr, 0, 4096)) {
                 printf("give back freed page, the page number is %d, address is 0x%lx\n", (coldPageId), pagePtr);
@@ -5988,6 +6114,8 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                 }
             }
             freeList.push_back(pagePtr);
+            assert(stat_used_bytes >= 4096);
+            stat_used_bytes -= 4096;
              if (cSize <= 256) {
                  if (smallFreeList.size() > 0) {
                      newAddr = smallFreeList.front();
@@ -5999,6 +6127,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                          smallFreeList.push_back(newAddr | (i << 8));
                      }
                  }
+                 stat_used_bytes += 256;
              } else if (cSize <= 512) {
                  if (moderateFreeList.size() > 0) {
                      newAddr = moderateFreeList.front();
@@ -6010,6 +6139,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                          smallFreeList.push_back(newAddr | (i << 9));
                      }
                  }
+                 stat_used_bytes += 512;
              } else {
                  if (largeFreeList.size() > 0) {
                      newAddr = largeFreeList.front();
@@ -6019,6 +6149,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                      freeList.pop_front();
                      largeFreeList.push_back(newAddr | (1 << 11));
                  }
+                 stat_used_bytes += 2048;
              }
             //  DPRINTF(MemCtrl, "new address is 0x%llx\n", newAddr);
              // copy the compressed data into the space at newAddr
@@ -6082,6 +6213,10 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         /* find a location for the page*/
         Addr newAddr = freeList.front();
         freeList.pop_front();
+
+        stat_used_bytes += 4096;
+        stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+        stats.usedMemoryByte = stat_max_used_bytes;
         
         if (coverageTestMC(newAddr, 0x198662, 4096)) {
             printf("Line %d: the addr is 0x%lx, size is %d\n", __LINE__, newAddr, 4096);
@@ -6427,7 +6562,8 @@ MemCtrl::allocateInflateRoom(std::vector<uint8_t>& metaData, const uint8_t& inde
             MPFN >>= 8;
         }
         stat_used_bytes += 512;
-        stats.usedMemoryKB = stat_used_bytes / 1024;
+        stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+        stats.usedMemoryByte = stat_max_used_bytes;
     }
     DPRINTF(MemCtrl, "Line %d: the new address is 0x%llx\n", __LINE__, addr);
     /* update the metaData for the inflation room */
@@ -6769,6 +6905,7 @@ MemCtrl::recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uin
        Addr chunkAddr = freeList.front();
        DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
        freeList.pop_front();
+       stat_used_bytes += 512;
 
        int chunkIdx = cur / 512;
        assert(chunkIdx <= 0x7ffff);
@@ -6781,14 +6918,14 @@ MemCtrl::recompressAtomic(std::vector<uint8_t>& cacheLine, uint64_t pageNum, uin
        if (cur + 512 < size) {
            mem_intr->atomicWrite(buffer, chunkAddr, 512, cur);
            cur += 512;
-           stat_used_bytes += 512;
        } else {
            mem_intr->atomicWrite(buffer, chunkAddr, size - cur, cur);
            break;
        }
    }
 
-   stats.usedMemoryKB = stat_used_bytes / 1024;
+   stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+   stats.usedMemoryByte = stat_max_used_bytes;
    // store the size of compressedPage into the control block (using 12 bit)
    newMetaData[1] = size & (0xFF);
    newMetaData[0] = newMetaData[0] | ((size >> 8) & 0xF);
@@ -6922,6 +7059,7 @@ MemCtrl::recompressTiming(PacketPtr writeForCompress) {
         Addr chunkAddr = freeList.front();
         DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
         freeList.pop_front();
+        stat_used_bytes += 512;
 
         int chunkIdx = cur / 512;
         assert(chunkIdx <= 0x7ffff);
@@ -6932,14 +7070,14 @@ MemCtrl::recompressTiming(PacketPtr writeForCompress) {
             metaData[2 + chunkIdx * 4 + u] = val;
         }
         if (cur + 512 < size) {
-            cur += 512;
-            stat_used_bytes += 512;
+            cur += 512;  
         } else {
             break;
         }
     }
 
-    stats.usedMemoryKB = stat_used_bytes / 1024;
+    stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
+    stats.usedMemoryByte = stat_max_used_bytes;
     // store the size of compressedPage into the control block (using 12 bit)
     metaData[1] = size & (0xFF);
     metaData[0] = metaData[0] | ((size >> 8) & 0xF);
@@ -7437,6 +7575,11 @@ MemCtrl::getInflateEntry(uint8_t index, const std::vector<uint8_t>& metaData) {
 
 bool
 MemCtrl::isEligible(PacketPtr pkt, bool ignoreRead) {
+    if (curTick() - recvLastPkt >= 5091336250) {
+        printf("the size of waitQueue is %d\n", waitQueue.size());
+        printf("the current pkt is 0x%lx\n", reinterpret_cast<unsigned long>(pkt));
+        panic("check isEligible should not be this long!!");
+    }
     auto targetPkt = waitQueue.find(pkt);
     assert(targetPkt != waitQueue.end());
 
@@ -7450,6 +7593,12 @@ MemCtrl::isEligible(PacketPtr pkt, bool ignoreRead) {
             res = false;
             break;
         }
+        // if (pkt->getPType() == 0x2 && pkt->isWrite()) {
+        //     if (curPkt->getPType() == 0x2 && curPkt->isWrite()) {
+        //         res = false;
+        //         break;
+        //     }
+        // }
     }
     DPRINTF(MemCtrl, "The pkt is %lx, if is eligible %d\n", pkt, res);
     return res;
@@ -7479,19 +7628,40 @@ MemCtrl::updateSubseqMetaData(PacketPtr pkt, PPN ppn) {
     for (; it != waitQueue.end(); it++) {
         PacketPtr curPkt = *it;
         if (curPkt->comprMetaDataMap.find(ppn) != curPkt->comprMetaDataMap.end()) {
-            waitQueue.erase(it);
             curPkt->comprMetaDataMap[ppn] = metaData;
-            waitQueue.insert(curPkt);
         }
     }
+    // for (const auto& pkt: to_remove) {
+    //     waitQueue.erase(pkt);
+    //     pkt->comprMetaDataMap[ppn] = metaData;
+    //     waitQueue.insert(pkt);
+    // }
 }
 
 void
 MemCtrl::checkForReadyPkt(){
+    recordForCheckReady = true;
     for (const auto& wait_pkt: waitQueue) {
         if (wait_pkt->comprIsProc == false && wait_pkt->comprIsReady) {
             assignToQueue(wait_pkt);
         }
+    }
+
+    if (to_delete_pkt.size() != 0) {
+        for (const auto& pkt: to_delete_pkt) {
+            assert(waitQueue.find(pkt) != waitQueue.end());
+            waitQueue.erase(pkt);
+        }
+        for (const auto& pkt: to_add_pkt) {
+            waitQueue.insert(pkt);
+        }
+        to_delete_pkt.clear();
+        to_add_pkt.clear();
+        checkForReadyPkt();
+    } else {
+        assert(to_add_pkt.size() == 0);
+        recordForCheckReady = false;
+        return;
     }
 }
 
@@ -7630,6 +7800,9 @@ MemCtrl::afterDecompForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     /* find a location for the page*/
     Addr newAddr = freeList.front();
     freeList.pop_front();
+    stat_used_bytes += 4096;
+    stat_max_used_bytes = std::max(stat_used_bytes, stat_max_used_bytes);
+    stats.usedMemoryByte = stat_max_used_bytes;
 
     if (coverageTestMC(newAddr, 0, 4096)) {
         printf("allocate the new address 0x%lx\n", newAddr);

@@ -714,6 +714,16 @@ class MemCtrl : public qos::MemCtrl
 
     bool blockedForCompr;
 
+    uint8_t typeOneBlock;
+    
+    uint8_t typeTwoBlock;
+
+    bool recordForCheckReady;
+
+    std::vector<PacketPtr> to_delete_pkt;
+
+    std::vector<PacketPtr> to_add_pkt;
+
     /* necessary variables for dyLeCT */
     bool blockedForDyL;
 
@@ -766,12 +776,16 @@ class MemCtrl : public qos::MemCtrl
 
     void timingAccessForDyL(PacketPtr pkt, MemInterface* mem_intr);
 
+    Tick recvLastPkt;
+
     /* ======= end for dyLeCT ======= */
 
     /* ======= start for the stats ====== */
     std::unordered_set<PPN> stat_page_used; 
 
     uint64_t stat_used_bytes;
+
+    uint64_t stat_max_used_bytes;
 
     /* ====== end for stats ====== */
 
@@ -892,7 +906,7 @@ class MemCtrl : public qos::MemCtrl
         statistics::Formula requestorWriteAvgLat;
 
         // estimate the usage of physical memory
-        statistics::Scalar usedMemoryKB;
+        statistics::Scalar usedMemoryByte;
     };
 
     CtrlStats stats;

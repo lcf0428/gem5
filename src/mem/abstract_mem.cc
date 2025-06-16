@@ -54,16 +54,16 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        uintptr_t target_addr = 0x2e80b0; 
-        pkt_size = 4096;
-        start_addr = (start_addr >> 12) << 12;
-        return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
+        // uintptr_t target_addr = 0x2e80b0; 
+        // pkt_size = 4096;
+        // start_addr = (start_addr >> 12) << 12;
+        // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
         // if (type == 0) {
         //     return true;
         // } else {
         //     return false;
         // }
-        // return false;
+        return false;
         // return true;
     }
 
