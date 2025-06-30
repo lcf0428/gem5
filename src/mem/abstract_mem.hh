@@ -365,7 +365,13 @@ class AbstractMemory : public ClockedObject
      *
      * @param pkt Packet performing the access
      */
-    void functionalAccess(PacketPtr pkt, int mode = 0);
+    void functionalAccess(PacketPtr pkt);
+
+    /*
+     * perform a functional access specially for DyLeCT
+     */
+
+    void functionalAccessForDyL(PacketPtr pkt, int mode);
 
     /*
      * perform a functional access specially for compresso
@@ -424,7 +430,7 @@ class AbstractMemory : public ClockedObject
             assert(compressedSize <= 64);
         }
     }
- 
+
     inline bool isAllZero(const std::vector<uint8_t>& cacheLine) {
         assert(cacheLine.size() == 64);
         bool res = true;

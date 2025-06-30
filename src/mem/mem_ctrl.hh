@@ -63,7 +63,7 @@
 #include "sim/eventq.hh"
 
 constexpr size_t PAGE_SIZE = 4096;  // 4KB
-constexpr size_t COMPRESSED_BUFFER_SIZE = PAGE_SIZE + (PAGE_SIZE / 100) + 12; 
+constexpr size_t COMPRESSED_BUFFER_SIZE = PAGE_SIZE + (PAGE_SIZE / 100) + 12;
 
 namespace gem5
 {
@@ -715,7 +715,7 @@ class MemCtrl : public qos::MemCtrl
     bool blockedForCompr;
 
     uint8_t typeOneBlock;
-    
+
     uint8_t typeTwoBlock;
 
     bool recordForCheckReady;
@@ -727,6 +727,8 @@ class MemCtrl : public qos::MemCtrl
     /* necessary variables for dyLeCT */
     bool blockedForDyL;
 
+    bool functionalBlockedForDyL;
+
     uint32_t blockedNumForDyL;
 
     std::list<PacketPtr> blockedQueueForDyL;
@@ -736,6 +738,8 @@ class MemCtrl : public qos::MemCtrl
     std::unordered_map<PacketPtr, Tick> delayForDecompress;
 
     std::unordered_map<PacketPtr, std::vector<uint8_t>> decompressedPage;
+
+    std::list<PacketPtr> inProcessWritePkt;
 
     uint64_t pktInProcess;
 
@@ -754,10 +758,10 @@ class MemCtrl : public qos::MemCtrl
     std::list<PPN> recencyList;                 // use the PPN to refer to a certain page (page id)
     std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
     std::list<uint64_t> moderateFreeList;       // the free list for the 512B memory block
-    std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block 
+    std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block
     uint64_t startAddrForCTE;
     uint64_t startAddrForPreGather;
-    uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter 
+    uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter
     uint64_t freeListThreshold;   // once the capacity of freeList is less than this threshold (e.g. 16MB), start to compress the page
     uint64_t recencyListThreshold;  // once the size of recencyList exceed this threshold.
 
@@ -781,7 +785,7 @@ class MemCtrl : public qos::MemCtrl
     /* ======= end for dyLeCT ======= */
 
     /* ======= start for the stats ====== */
-    std::unordered_set<PPN> stat_page_used; 
+    std::unordered_set<PPN> stat_page_used;
 
     uint64_t stat_used_bytes;
 

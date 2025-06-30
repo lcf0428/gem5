@@ -577,13 +577,14 @@ class Packet : public Printable, public Extensible<Packet>
     /* ===== special for DyLeCT ===== */
     enum : PacketTypeForDyL
     {
-        regular                 = 0x00000001,
-        readCompressed          = 0x00000002,
-        writeUncompressed       = 0x00000004,
-        readUncompressed        = 0x00000008,
-        writeCompressed         = 0x00000010,
-        readCTE                 = 0x00000020,
-        writeCTE                = 0x00000040
+        origin                  = 0x00000001,
+        auxiliary               = 0x00000002,
+        readCompressed          = 0x00000004,
+        writeUncompressed       = 0x00000008,
+        readUncompressed        = 0x00000010,
+        writeCompressed         = 0x00000020,
+        readCTE                 = 0x00000040,
+        writeCTE                = 0x00000080
     };
 
     /// only used for the metadata read/write
@@ -945,7 +946,7 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(regular),
+           DyLPType(origin),
            DyLStatus(0),
            compressPageId(0),
            DyLOriginal(false)
@@ -994,7 +995,7 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(regular),
+           DyLPType(origin),
            DyLStatus(0),
            compressPageId(0),
            DyLOriginal(false)
@@ -1033,7 +1034,7 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(regular),
+           DyLPType(origin),
            DyLStatus(0),
            compressPageId(0),
            DyLOriginal(false)
@@ -1092,8 +1093,8 @@ class Packet : public Printable, public Extensible<Packet>
         comprTick(tick),
         comprIsReady(false),
         comprIsProc(false),
-        DyLCandidate(nullptr), DyLBackup(0),
-        DyLPType(regular),
+        DyLCandidate(pkt), DyLBackup(0),
+        DyLPType(auxiliary),
         DyLStatus(0),
         compressPageId(0),
         DyLOriginal(false)
@@ -1384,6 +1385,13 @@ class Packet : public Printable, public Extensible<Packet>
     {
         assert(flags.isSet(STATIC_DATA|DYNAMIC_DATA));
         return (const T*)data;
+    }
+
+    template <typename T>
+    T*
+    getPtrForMC() {
+        assert(flags.isSet(STATIC_DATA|DYNAMIC_DATA));
+        return (T*)data;
     }
 
     /**

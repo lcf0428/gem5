@@ -54,7 +54,7 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x2e80b0; 
+        // uintptr_t target_addr = 0x2e80b0;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -822,7 +822,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
             if (pageNum == ppn) {
                 if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
-                   printf("pageBuffer hit\n"); 
+                   printf("pageBuffer hit\n");
                 }
                 assert(mPageBuffer.size() == metaData.size());
                 for (int temp = 0; temp < metaData.size(); temp++) {
@@ -1055,7 +1055,7 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                         if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
                             printf("if inInflate: %d\n", inInflate);
                         }
-                        
+
                         if (!inInflate) {
                             // printf("the compressed size is %d\n", compressed.size());
                             // printf("the space is %d\n", sizeMap[type]);
@@ -1109,40 +1109,40 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
 
 void
-AbstractMemory::functionalAccess(PacketPtr pkt, int mode)
+AbstractMemory::functionalAccess(PacketPtr pkt)
 {
     assert(pkt->getAddrRange().isSubset(range));
 
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
 
-    if (coverageTest(pkt->getAddr(), 0x25cc000, pkt->getSize())) {
-        printf("acess For DyL\n");
-        printf("recv Timing: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
-        if (pkt->isWrite()) {
-            uint8_t* start = pkt->getPtr<uint8_t>();
-            for (int ts = 0; ts < pkt->getSize(); ts++) {
-                printf("%02x ", static_cast<unsigned int>(start[ts]));
-            }
-            printf("\n");
-            fflush(stdout);
-        }
-    }
+    // if (coverageTest(pkt->getAddr(), 0x25cc000, pkt->getSize())) {
+    //     printf("acess For DyL\n");
+    //     printf("recv Timing: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
+    //     if (pkt->isWrite()) {
+    //         uint8_t* start = pkt->getPtr<uint8_t>();
+    //         for (int ts = 0; ts < pkt->getSize(); ts++) {
+    //             printf("%02x ", static_cast<unsigned int>(start[ts]));
+    //         }
+    //         printf("\n");
+    //         fflush(stdout);
+    //     }
+    // }
 
-    Addr start_addr = (mode == 0)?pkt->getAddr():pkt->DyLBackup;
     if (pkt->isRead()) {
         if (pmemAddr) {
             pkt->setData(host_addr);
         }
 
+
         uint8_t* test_start = pkt->getPtr<uint8_t>();
-        if (isAddressCoveredForAM(start_addr, pkt->getSize(), 0)) {
+        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
             printf("Functional read: ");
             for (int u = 0; u < pkt->getSize(); u++) {
                 printf("%02x ", static_cast<unsigned int>(test_start[u]));
             }
             printf("\n");
         }
-        pkt->setAddr(pkt->DyLBackup);
+
         TRACE_PACKET("Read");
         pkt->makeResponse();
     } else if (pkt->isWrite()) {
@@ -1150,7 +1150,7 @@ AbstractMemory::functionalAccess(PacketPtr pkt, int mode)
             pkt->writeData(host_addr);
         }
 
-        if (isAddressCoveredForAM(start_addr, pkt->getSize(), 0)) {
+        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
             printf("Functional write: ");
             uint8_t* test_start = pkt->getPtr<uint8_t>();
             for (int i = 0; i < pkt->getSize(); i++) {
@@ -1158,9 +1158,7 @@ AbstractMemory::functionalAccess(PacketPtr pkt, int mode)
             }
             printf("\n");
         }
-        if (mode == 1) {
-            pkt->setAddr(pkt->DyLBackup);
-        }
+
         TRACE_PACKET("Write");
         pkt->makeResponse();
     } else if (pkt->isPrint()) {
@@ -1172,6 +1170,75 @@ AbstractMemory::functionalAccess(PacketPtr pkt, int mode)
         prs->printLabels();
         // Right now we just print the single byte at the specified address.
         ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+    } else {
+        panic("AbstractMemory: unimplemented functional command %s",
+              pkt->cmdString());
+    }
+}
+
+/*
+    mode = 0: not blocked
+    mode = 1: blocked and only track the status
+    mode = 2: the original pkt blocked and become unblocked, pkt is actually the auxPKt and perform actual access to the memory
+*/
+
+void
+AbstractMemory::functionalAccessForDyL(PacketPtr pkt, int mode) {
+    assert(pkt->getAddrRange().isSubset(range));
+
+    uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+    if (mode != 2) {
+        pkt->setAddr(pkt->DyLBackup);
+    }
+
+    if (pkt->isRead()) {
+        if (pmemAddr && (mode == 0)) {
+            pkt->setData(host_addr);
+        }
+
+        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0) && (mode != 2)) {
+            uint8_t* test_start = pkt->getPtr<uint8_t>();
+            printf("Functional read: ");
+            for (int u = 0; u < pkt->getSize(); u++) {
+                printf("%02x ", static_cast<unsigned int>(test_start[u]));
+            }
+            printf("\n");
+        }
+
+        if (mode != 2) {
+            TRACE_PACKET("Read");
+            pkt->makeResponse();
+        }
+    } else if (pkt->isWrite()) {
+        if (pmemAddr && (mode != 1)) {
+            pkt->writeData(host_addr);
+        }
+
+        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0) && (mode != 2)) {
+            printf("Functional write: ");
+            uint8_t* test_start = pkt->getPtr<uint8_t>();
+            for (int i = 0; i < pkt->getSize(); i++) {
+                printf("%02x ", static_cast<unsigned int>(test_start[i]));
+            }
+            printf("\n");
+        }
+
+        if (mode != 2) {
+            TRACE_PACKET("Write");
+            pkt->makeResponse();
+        }
+    } else if (pkt->isPrint()) {
+        if (mode != 2) {
+            Packet::PrintReqState *prs =
+                dynamic_cast<Packet::PrintReqState*>(pkt->senderState);
+            assert(prs);
+            // Need to call printLabels() explicitly since we're not going
+            // through printObj().
+            prs->printLabels();
+            // Right now we just print the single byte at the specified address.
+            ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+        }
     } else {
         panic("AbstractMemory: unimplemented functional command %s",
               pkt->cmdString());
