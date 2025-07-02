@@ -104,6 +104,9 @@ class MemPacket
 {
   public:
 
+    /* If this is for the user's memory access */
+    bool memoryAccess;
+
     /** When did request enter the controller */
     const Tick entryTime;
 
@@ -211,7 +214,7 @@ class MemPacket
     MemPacket(PacketPtr _pkt, bool is_read, bool is_dram, uint8_t _channel,
                uint8_t _rank, uint8_t _bank, uint32_t _row, uint16_t bank_id,
                Addr _addr, unsigned int _size)
-        : entryTime(curTick()), readyTime(curTick()), pkt(_pkt),
+        : memoryAccess(false), entryTime(curTick()), readyTime(curTick()), pkt(_pkt),
           _requestorId(pkt->requestorId()),
           read(is_read), dram(is_dram), pseudoChannel(_channel), rank(_rank),
           bank(_bank), row(_row), bankId(bank_id), addr(_addr), size(_size),
@@ -532,7 +535,7 @@ class MemCtrl : public qos::MemCtrl
     MemInterface* dram;
 
     /**
-    * TODO: add some neccessary variables for compresso
+    * add some neccessary variables for compresso
     */
     typedef uint64_t PPN;
 
@@ -1080,14 +1083,17 @@ class MemCtrl : public qos::MemCtrl
     virtual void recvFunctional(PacketPtr pkt);
     virtual void recvMemBackdoorReq(const MemBackdoorReq &req,
             MemBackdoorPtr &backdoor);
+
     virtual bool recvTimingReq(PacketPtr pkt);
     bool recvTimingReqLogic(PacketPtr pkt);
     bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
     bool recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked = false);
+    bool recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked = false);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
+    bool recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr);
 
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);

@@ -577,14 +577,14 @@ class Packet : public Printable, public Extensible<Packet>
     /* ===== special for DyLeCT ===== */
     enum : PacketTypeForDyL
     {
-        origin                  = 0x00000001,
-        auxiliary               = 0x00000002,
-        readCompressed          = 0x00000004,
-        writeUncompressed       = 0x00000008,
-        readUncompressed        = 0x00000010,
-        writeCompressed         = 0x00000020,
-        readCTE                 = 0x00000040,
-        writeCTE                = 0x00000080
+        DyL_origin                  = 0x00000001,
+        DyL_auxiliary               = 0x00000002,
+        DyL_readCompressed          = 0x00000004,
+        DyL_writeUncompressed       = 0x00000008,
+        DyL_readUncompressed        = 0x00000010,
+        DyL_writeCompressed         = 0x00000020,
+        DyL_readCTE                 = 0x00000040,
+        DyL_writeCTE                = 0x00000080
     };
 
     /// only used for the metadata read/write
@@ -601,8 +601,17 @@ class Packet : public Printable, public Extensible<Packet>
 
     uint64_t compressPageId;
 
-    bool DyLOriginal;
+    uint8_t usedForComp;
     /* ===== end for DyLeCT ===== */
+
+    /* ===== special for new architecture ===== */
+    PacketPtr new_backup;
+
+    std::unordered_map<uint64_t, std::vector<uint8_t>> newMetadataMap;  /* metaDataMap[PPN] -> get metadata */
+
+
+
+    /* ===== end for new ===== */
 
     /**
      * Push a new sender state to the packet and make the current
@@ -946,10 +955,10 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(origin),
+           DyLPType(DyL_origin),
            DyLStatus(0),
            compressPageId(0),
-           DyLOriginal(false)
+           usedForComp(0)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -995,10 +1004,10 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(origin),
+           DyLPType(DyL_origin),
            DyLStatus(0),
            compressPageId(0),
-           DyLOriginal(false)
+           usedForComp(0)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -1034,10 +1043,10 @@ class Packet : public Printable, public Extensible<Packet>
            comprIsReady(false),
            comprIsProc(false),
            DyLCandidate(nullptr), DyLBackup(0),
-           DyLPType(origin),
+           DyLPType(DyL_origin),
            DyLStatus(0),
            compressPageId(0),
-           DyLOriginal(false)
+           usedForComp(0)
     {
         if (!clear_flags)
             flags.set(pkt->flags & COPY_FLAGS);
@@ -1094,10 +1103,10 @@ class Packet : public Printable, public Extensible<Packet>
         comprIsReady(false),
         comprIsProc(false),
         DyLCandidate(pkt), DyLBackup(0),
-        DyLPType(auxiliary),
+        DyLPType(DyL_auxiliary),
         DyLStatus(0),
         compressPageId(0),
-        DyLOriginal(false)
+        usedForComp(0)
     {
         flags.set(pkt->flags & COPY_FLAGS);
 

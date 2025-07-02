@@ -532,7 +532,7 @@ Packet::getHtmTransactionUid() const
     return htmTransactionUid;
 }
 
-void 
+void
 Packet::configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p)
 {
     setAddr(addr);
@@ -540,7 +540,7 @@ Packet::configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p)
     setSizeForMC(total_size);
     setPayload(p);
     allocateForMC();
-    setType(readCompressed);
+    setType(DyL_readCompressed);
     DyLStatus = 2;
 }
 
@@ -552,7 +552,7 @@ Packet::configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId)
     setSizeForMC(4096);   // read the whole page (4kB)
     setPayload(p);
     allocateForMC();
-    setType(readUncompressed);
+    setType(DyL_readUncompressed);
     DyLStatus = 1;
     compressPageId = pageId;
 }
@@ -565,7 +565,7 @@ Packet::configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p
     setSizeForMC(total_size);
     setPayload(p);
     allocateForMC();
-    setType(writeCompressed);
+    setType(DyL_writeCompressed);
     for (unsigned int i = 0; i < total_size; i++) {
         data[i] = page[i];
     }
@@ -578,7 +578,7 @@ Packet::configAsWriteUncompress(const Addr& addr, PacketPtr p, std::vector<uint8
     setSizeForMC(4096);
     setPayload(p);
     allocateForMC();
-    setType(writeUncompressed);
+    setType(DyL_writeUncompressed);
     for (unsigned int i = 0; i < 4096; i++) {
         data[i] = page[i];
     }
@@ -591,7 +591,7 @@ Packet::configAsReadCTE(const Addr& addr, PacketPtr p) {
     setSizeForMC();
     allocateForMC();
     setPayload(p);
-    setType(readCTE);
+    setType(DyL_readCTE);
 }
 
 void
@@ -601,7 +601,7 @@ Packet::configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size) {
     setSizeForMC(size);
     allocateForMC();
     setPayload(p);
-    setType(writeCTE);
+    setType(DyL_writeCTE);
 }
 
 } // namespace gem5
