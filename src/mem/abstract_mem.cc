@@ -54,16 +54,16 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x2e80b0;
+        // uintptr_t target_addr = 0x57180;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
-        // if (type == 0) {
-        //     return true;
-        // } else {
-        //     return false;
-        // }
-        return false;
+        if (type == 0) {
+            return true;
+        } else {
+            return false;
+        }
+        // return false;
         // return true;
     }
 
@@ -1107,6 +1107,200 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
     }
 }
 
+void
+AbstractMemory::accessForNew(PacketPtr pkt, uint8_t mode) {
+    std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
+    if (mode == 0) {
+        /* pkt is aux_pkt */
+        PacketPtr real_recv_pkt = pkt->new_backup;
+        if (real_recv_pkt->cacheResponding()) {
+            DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
+                    real_recv_pkt->getAddr());
+            return;
+        }
+
+        if (real_recv_pkt->cmd == MemCmd::CleanEvict || real_recv_pkt->cmd == MemCmd::WritebackClean) {
+            DPRINTF(MemoryAccess, "CleanEvict  on 0x%x: not responding\n",
+                    real_recv_pkt->getAddr());
+            return;
+        }
+        if (pkt->cmd == MemCmd::SwapReq) {
+            if (pkt->isAtomicOp()) {
+
+            } else {
+                assert(!real_recv_pkt->req->isInstFetch());
+                TRACE_PACKET("Read/Write");
+                if (collectStats) {
+                    stats.numOther[real_recv_pkt->req->requestorId()]++;
+                }   
+            }
+        } else if (pkt->isRead()) {
+            assert(!pkt->isWrite());
+            if (real_recv_pkt->isLLSC()) {
+                assert(!real_recv_pkt->fromCache());
+                trackLoadLocked(real_recv_pkt);
+            }
+            if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
+                // printf("Atomic read marker: ");
+                printf("marker:%lx\n", pkt);
+                printf("Timing read marker: ");
+                uint8_t* start = pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < pkt->getSize(); ts++) {
+                    printf("%02x ", static_cast<unsigned int>(start[ts]));
+                }
+                printf("\n");
+                fflush(stdout);
+            }
+            TRACE_PACKET(real_recv_pkt->req->isInstFetch() ? "IFetch" : "Read");
+            if (collectStats) {
+                stats.numReads[real_recv_pkt->req->requestorId()]++;
+                stats.bytesRead[real_recv_pkt->req->requestorId()] += real_recv_pkt->getSize();
+                if (real_recv_pkt->req->isInstFetch()) {
+                    stats.bytesInstRead[real_recv_pkt->req->requestorId()] += real_recv_pkt->getSize();
+                }
+            }
+        }  else if (pkt->isInvalidate() || pkt->isClean()) {
+            assert(!pkt->isWrite());
+            // in a fastmem system invalidating and/or cleaning packets
+            // can be seen due to cache maintenance requests
+
+            // no need to do anything
+        } else if (pkt->isWrite()) {
+            if (writeOK(pkt)) {
+                if (pmemAddr) {
+                    if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
+                        // printf("Atomic write marker: ");
+                        printf("marker:%lx\n", pkt);
+                        printf("Timing write marker: ");
+                        uint8_t* start = pkt->getPtr<uint8_t>();
+                        for (int ts = 0; ts < pkt->getSize(); ts++) {
+                        printf("%02x ", static_cast<unsigned int>(start[ts]));
+                        }
+                        printf("\n");
+                        fflush(stdout);
+                    }
+                    
+                }
+                assert(!real_recv_pkt->req->isInstFetch());
+                TRACE_PACKET("Write");
+                if (collectStats) {
+                    stats.numWrites[real_recv_pkt->req->requestorId()]++;
+                    stats.bytesWritten[real_recv_pkt->req->requestorId()] += real_recv_pkt->getSize();
+                }
+            }
+        } else {
+            panic("Unexpected packet %s", pkt->print());
+        }
+
+        if (real_recv_pkt->needsResponse()) {
+            real_recv_pkt->makeResponse();
+        }
+
+    } else {
+        assert(pkt->getAddrRange().isSubset(range));
+        uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+        if (pkt->cmd == MemCmd::SwapReq) {
+            assert(pkt->newPType == 0x04);  // the pkt is sub pkt;
+            PacketPtr aux_pkt = pkt->new_backup;
+            uint8_t cacheLineIdx = (aux_pkt->getAddr() >> 6) & 0x3F;
+
+            if (pkt->isAtomicOp()) {
+                panic("not support yet");
+                // if (pmemAddr) {
+                //     pkt->setData(host_addr);
+                //     (*(pkt->getAtomicOp()))(host_addr);
+                // }
+            } else {
+                std::vector<uint8_t> overwrite_val(pkt->getSize());
+                uint64_t condition_val64;
+                uint32_t condition_val32;
+
+                panic_if(!pmemAddr, "Swap only works if there is real memory " \
+                        "(i.e. null=False)");
+
+                bool overwrite_mem = true;
+                // keep a copy of our possible write value, and copy what is at the
+                // memory address into the packet
+                pkt->writeData(&overwrite_val[0]);
+
+                uint8_t real_size = 64;
+                if (pkt->old_type < 0b100) {
+                    real_size = sizeMap[pkt->old_type];
+                }
+                std::vector<uint8_t> data(64, 0);
+                uint8_t *old_host_addr = toHostAddr(pkt->old_addr);
+                memcpy(data.data(), old_host_addr, real_size); 
+                new_restoreDataAM(data, pkt->old_type);
+                pkt->setSizeForMC(real_size);
+                pkt->allocateForMC();
+                pkt->setData(old_host_addr);
+
+                if (aux_pkt->req->isCondSwap()) {
+                    uint8_t offset = aux_pkt->getAddr() & 0x3F;
+                    if (aux_pkt->getSize() == sizeof(uint64_t)) {
+                        condition_val64 = aux_pkt->req->getExtraData();
+                        overwrite_mem = !std::memcmp(&condition_val64, data.data() + offset,     
+                                                    sizeof(uint64_t));
+                    } else if (aux_pkt->getSize() == sizeof(uint32_t)) {
+                        condition_val32 = (uint32_t)aux_pkt->req->getExtraData();
+                        overwrite_mem = !std::memcmp(&condition_val32, data.data() + offset,
+                                                    sizeof(uint32_t));
+                    } else
+                        panic("Invalid size for conditional read/write\n");
+                }
+
+                if (overwrite_mem) {
+                    std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
+                } else {
+                    // TODO: may have to write the origin data to the overflow place
+                    panic("not implement yet");
+                }
+            }
+        } else if (pkt->isRead()) {
+            assert(!pkt->isWrite());
+            if (pmemAddr) {
+                if (pkt->suffixLen == 0) {
+                    pkt->setData(host_addr);   
+                } else {
+                    assert(pkt->newPType == 0x04 || pkt->newPType == 0x08);  // should be sub-pkt;
+                    assert(pkt->getSize() > pkt->suffixLen);
+                    uint64_t prefixLen = pkt->getSize() - pkt->suffixLen;
+                    pkt->setDataForMC(host_addr, 0, prefixLen);
+                    uint8_t* host_new_block_addr = toHostAddr(pkt->newBlockAddr);
+                    pkt->setDataForMC(host_new_block_addr, prefixLen, pkt->suffixLen);
+                }
+            }
+        } else if (pkt->isInvalidate() || pkt->isClean()) {
+            assert(!pkt->isWrite());
+            // in a fastmem system invalidating and/or cleaning packets
+            // can be seen due to cache maintenance requests
+
+            // no need to do anything
+        } else if (pkt->isWrite()) {
+            if (writeOK(pkt) || pkt->newPType > 0x04) {
+                if (pmemAddr) {
+                    // printf("the host address correspond to 0x%lx\n", pkt->getAddr());
+                    // printf("pkt->size is %d\n", pkt->getSize());
+                    // fflush(stdout);
+                    if (pkt->suffixLen == 0) {
+                        pkt->writeData(host_addr);   
+                    } else {
+                        assert(pkt->newPType == 0x04);  // should be sub-pkt;
+                        assert(pkt->getSize() > pkt->suffixLen);
+                        uint64_t prefixLen = pkt->getSize() - pkt->suffixLen;
+                        pkt->writeDataForMC(host_addr, 0, prefixLen);
+                        uint8_t* host_new_block_addr = toHostAddr(pkt->newBlockAddr);
+                        pkt->writeDataForMC(host_new_block_addr, prefixLen, pkt->suffixLen);
+                    }
+                    
+                }
+            }
+        } else {
+            panic("Unexpected packet %s", pkt->print());
+        }
+    }
+}
 
 void
 AbstractMemory::functionalAccess(PacketPtr pkt)
@@ -1490,6 +1684,211 @@ AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64
               pkt->cmdString());
     }
 }
+
+void
+AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr) {
+    /* receive a pkt from outside world */
+    assert(pkt->new_backup);
+    PacketPtr real_recv_pkt = pkt->new_backup;
+
+    /* get initial information */
+    unsigned size = pkt->getSize();
+    unsigned offset = pkt->getAddr() & (burst_size - 1);
+    unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    Addr base_addr = pkt->getAddr();
+    Addr addr = base_addr;
+
+    /* prepare the auxiliary information */
+    std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
+    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->newfunctionMetaDataMap;
+
+    if (pkt->isRead()) {
+        /* process the pkt in order */
+        for (unsigned int i = 0; i < pkt_count; i++) {
+            uint64_t ppn = addr >> 12;
+            uint8_t cachelineIdx = (addr >> 6) & 0x3F;
+
+            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+            std::vector<uint8_t> metaData = metaDataMap[ppn];
+            uint8_t type = new_getTypeAM(metaData, cachelineIdx);
+            std::vector<uint8_t> cacheLine(64, 0);
+
+            std::vector<uint64_t> translationRes(3, 0);
+            translationRes[0] = zeroAddr;
+            if (new_getCoverageAM(metaData) > cachelineIdx) {
+                translationRes = new_addressTranslationAM(metaData, cachelineIdx);
+            } else {
+                assert(type == 0);
+            }
+            uint8_t* host_origin_addr = toHostAddr(translationRes[0]);
+            
+            if (type >= 0b100) {
+                std::memcpy(cacheLine.data(), host_origin_addr, 1);
+                uint8_t overflowIdx = cacheLine[0];
+
+                Addr overflow_addr = new_calOverflowAddrAM(metaData, overflowIdx);
+                uint8_t* host_overflow_addr = toHostAddr(overflow_addr);
+                std::memcpy(cacheLine.data(), host_overflow_addr, 64);
+            } else {
+                assert(sizeMap[type] > translationRes[2]);
+                if (translationRes[2] == 0) {
+                    std::memcpy(cacheLine.data(), host_origin_addr, sizeMap[type]);   
+                } else {
+                    uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                    std::memcpy(cacheLine.data(), host_origin_addr, prefixLen);
+                    uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
+                    std::memcpy(cacheLine.data() + prefixLen, host_new_block_addr, translationRes[2]);
+                }
+            }
+
+            new_restoreDataAM(cacheLine, type);
+            assert(cacheLine.size() == 64);
+
+            uint8_t loc = addr & 0x3F;
+            uint64_t ofs = addr - pkt->getAddr();
+            size_t size = std::min(pkt->getSize() - ofs, 64UL - loc);
+            // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+            pkt->setDataForMC(cacheLine.data() + loc, ofs, size);
+
+            addr = (addr | (burst_size - 1)) + 1;
+        }
+
+        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
+            printf("Functional read: ");
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+            printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+        }
+
+
+        TRACE_PACKET("Read");
+        real_recv_pkt->makeResponse();
+    } else if (pkt->isWrite()) {  
+        /* assert the pkt should be burst_size/cacheline aligned */
+        assert(offset == 0);
+        assert((size & (burst_size - 1)) == 0);
+        assert(pkt_count == (size / burst_size));
+
+        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
+            printf("Functional write: ");
+            uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+            printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+        }
+
+        for (unsigned int i = 0; i < pkt_count; i++) {
+            uint64_t ppn = addr >> 12;
+            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+            
+            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+            std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+            // printf("cacheLineIdx is %d\n", cacheLineIdx);
+            // printf("coverage %d\n", new_getCoverageAM(metaData));
+
+            assert(cacheLineIdx < new_getCoverageAM(metaData));
+            uint8_t type = new_getTypeAM(metaData, cacheLineIdx);
+
+            std::vector<uint8_t> cacheLine(64, 0);
+
+            uint64_t ofs = addr - pkt->getAddr();
+
+            pkt->writeDataForMC(cacheLine.data(), ofs, 64);
+
+            std::vector<uint8_t> new_cacheLine = cacheLine;
+
+            if (type < 0b100) {
+                /* compress the cacheline */
+                new_cacheLine = new_compress(cacheLine);
+            }
+
+            if (new_cacheLine.size() > 44) {
+                assert(new_cacheLine.size() == 64);
+            }
+
+            // printf("the metadata is :\n");
+            // for (int k = 0; k < 64; k++) {
+            //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+            // }
+            // printf("\n");
+
+            std::vector<uint64_t> translationRes = new_addressTranslationAM(metaData, cacheLineIdx);
+  
+
+            uint8_t* origin_host_addr = toHostAddr(translationRes[0]);
+
+            Addr real_addr = translationRes[0];
+
+            if (type >= 0b100) {
+                uint8_t overflowIdx = 0;
+                std::memcpy(&overflowIdx, origin_host_addr, 1);
+                real_addr = new_calOverflowAddrAM(metaData, overflowIdx);
+                assert(new_cacheLine.size() == 64);
+            }
+
+            uint8_t* real_host_addr = toHostAddr(real_addr);
+
+            if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                printf("the cacheLineIdx is %d\n", static_cast<unsigned int>(cacheLineIdx));
+                printf("the origin space data resides is 0x%lx\n", translationRes[0]);
+                printf("the real mpa address is 0x%lx\n", real_addr);
+                printf("ppn is %d, the metadata is:\n", ppn);
+                for (int k = 0; k < 64; k++) {
+                    printf("%02x",static_cast<unsigned>(metaData[k]));
+                }
+                printf("\n");
+                printf("the new_cacheline size is %d\n", new_cacheLine.size());
+
+            }
+
+
+
+
+            if (pmemAddr) {
+                if (type >= 0b100 || translationRes[2] == 0) {
+                    std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                } else {
+                    uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                    if (prefixLen >= new_cacheLine.size()) {
+                        std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                    } else {
+                        std::memcpy(real_host_addr, new_cacheLine.data(), prefixLen);
+                        uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
+                        std::memcpy(host_new_block_addr, new_cacheLine.data() + prefixLen, new_cacheLine.size() - prefixLen);
+                    }
+                }
+            }
+
+            Addr old_addr = addr;
+            addr = (addr | (burst_size - 1)) + 1;
+            assert(addr == old_addr + burst_size);
+        }
+
+        TRACE_PACKET("Write");
+        real_recv_pkt->makeResponse();
+    } else if (pkt->isPrint()) {
+        uint8_t *host_addr = toHostAddr(real_recv_pkt->getAddr());
+        Packet::PrintReqState *prs =
+            dynamic_cast<Packet::PrintReqState*>(pkt->senderState);
+        assert(prs);
+        // Need to call printLabels() explicitly since we're not going
+        // through printObj().
+        prs->printLabels();
+        // Right now we just print the single byte at the specified address.
+        ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+    } else {
+        panic("AbstractMemory: unimplemented functional command %s",
+              pkt->cmdString());
+    }
+
+}
+
 
 uint8_t
 AbstractMemory::getType(const std::vector<uint8_t>& metaData, const uint8_t& index) {
@@ -1998,6 +2397,190 @@ AbstractMemory::setType(std::vector<uint8_t>& metaData, const uint8_t& index, co
     int ofs = startPos % 8;
     metaData[loc] = (metaData[loc] & (~(0b11 << (6 - ofs)))) |  (type << (6 - ofs));
 }
+
+
+/* ====== special for the new architecture ======= */
+
+uint8_t 
+AbstractMemory::new_getTypeAM(const std::vector<uint8_t>& metaData, const uint8_t& index) {
+    uint8_t type = 0;
+
+    int startPos = 40 * 8 + index;
+    int loc = startPos / 8;
+    int ofs = startPos % 8;
+    uint8_t prec = 0b1 & (metaData[loc] >> (7 - ofs));
+    type = prec << 2;
+
+    startPos = 48 * 8 + index * 2;
+    loc = startPos / 8;
+    ofs = startPos % 8;
+    uint8_t succ = 0b11 & (metaData[loc] >> (6 - ofs));
+    type = type | succ;
+
+    return type;
+}
+
+uint8_t
+AbstractMemory::new_getCoverageAM(const std::vector<uint8_t>& metaData) {
+    uint8_t cover = metaData[0] & 0x7F;
+    return cover;
+}
+
+std::vector<uint8_t>
+AbstractMemory::new_compress(const std::vector<uint8_t>& cacheLine) {
+    assert(cacheLine.size() == 64);
+    if (isAllZero(cacheLine)) {
+        std::vector<uint8_t> oneByte = {0};
+        return oneByte;
+    }
+    std::pair<uint64_t, std::vector<uint16_t>> transformed = BDXTransform(cacheLine);
+    uint64_t base = transformed.first;
+    std::vector<uint8_t> compressed = compressC(transformed.second);
+    for (int i = 0; i < 4; i++) {
+        uint8_t val = base & 0xFF;
+        base >>= 8;
+        compressed.insert(compressed.begin(), val);
+    }
+    if (compressed.size() > 44) {
+        return cacheLine;
+    }
+    return compressed;
+}
+
+void
+AbstractMemory::new_decompress(std::vector<uint8_t>& data) {
+    uint64_t base = 0;
+    for (int i = 0; i < 4; i++) {
+        base = (base << 8) | data[0];
+        data.erase(data.begin());
+    }
+
+    std::vector<uint16_t> interm = decompressC(data);
+    data = BDXRecover(base, interm);
+}
+
+void
+AbstractMemory::new_restoreDataAM(std::vector<uint8_t>& compressed, uint8_t type) {
+    if (type >= 0b011) {
+        return;
+    } else if (type == 0b000) {
+        compressed.resize(64);
+        for (int i = 0; i < compressed.size(); i++) {
+            compressed[i] = 0;
+        }
+    } else {
+        new_decompress(compressed);
+    }
+}
+
+/*
+    Givem the metadata and the target cacheLineIdx, return a vector containing three elements
+    res[0]: the starting address of the original space allocated for this cacheline
+    res[1] (only valid for those cachelines that across two blocks): the starting address of the second part
+    res[2]: the size of the second part
+*/
+std::vector<uint64_t>
+AbstractMemory::new_addressTranslationAM(const std::vector<uint8_t>& metaData, uint8_t cachelineIdx) {
+
+    std::vector<uint64_t> res(3, 0);
+    assert(metaData.size() == 64);
+    
+    std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
+    std::vector<uint64_t> pageSizeMap = {0, 512, 1024, 2048, 3072, 4096, 4608, 5120, 6144, 7168};
+
+
+    // printf("the metadata is:\n");
+
+    // for (int i = 0; i < 64; i++) {
+    //     if (i % 8 == 0) {
+    //         printf("\n");
+    //     }
+    //     printf("%x ", static_cast<unsigned int>(metaData[i]));
+    // }
+
+    // printf("\n");
+
+    uint64_t startLoc = 0;
+
+    for (uint8_t u = 0; u < cachelineIdx; u++) {
+        uint8_t type = new_getTypeAM(metaData, u);
+        startLoc += sizeMap[(type & 0b11)];
+    }
+    assert(startLoc < pageSizeMap[9]);
+
+    // printf("new_addressTranslation AM cacheLineidx %d, startLoc is %ld\n", static_cast<unsigned int>(cachelineIdx), startLoc);
+    
+    Addr addr = 0;
+    auto it = std::upper_bound(pageSizeMap.begin(), pageSizeMap.end(), startLoc);
+    uint64_t chunkIdx = it - pageSizeMap.begin();
+    
+    assert(chunkIdx >= 1);
+    assert(chunkIdx <= metaData[1]);
+
+    for (int u = 0; u < 4; u++){   // 4B per MPFN
+        addr = (addr << 8) | (metaData[4 * chunkIdx + u]);
+    }
+
+    uint64_t leftover = startLoc - pageSizeMap[chunkIdx - 1];
+    uint64_t chunkSize = pageSizeMap[chunkIdx] - pageSizeMap[chunkIdx - 1];
+    assert(leftover < chunkSize);
+    if (chunkSize == 512) {
+        addr = (addr << 9) | (leftover & 0x1FF);
+    } else {
+        assert(chunkSize == 1024);
+        addr = (addr << 9) | (leftover & 0x3FF);
+    }
+
+    res[0] = addr;
+
+    uint8_t cur_type = new_getTypeAM(metaData, cachelineIdx);
+
+    if (startLoc + sizeMap[cur_type & 0b11] > pageSizeMap[chunkIdx]) {
+        assert(chunkIdx < 9);
+        uint64_t suffixLen = startLoc + sizeMap[cur_type & 0b11] - pageSizeMap[chunkIdx];
+        Addr new_block_addr = 0;
+        for (int u = 0; u < 4; u++){   // 4B per MPFN
+            new_block_addr = (new_block_addr << 8) | (metaData[4 * chunkIdx + 4 + u]);
+        }
+        res[1] = new_block_addr << 9;
+        res[2] = suffixLen;
+    }
+
+    return res;
+
+}
+
+Addr
+AbstractMemory::new_calOverflowAddrAM(const std::vector<uint8_t>& metaData, uint8_t overflowIdx) {
+    std::vector<uint64_t> pageSizeMap = {0, 512, 1024, 2048, 3072, 4096, 4608, 5120, 6144, 7168};
+
+    uint64_t offset = metaData[2] * 64 + overflowIdx * 64;
+    // printf("metaDatap[2] is %d\n", static_cast<unsigned int>(metaData[2]));
+    // printf("overflowIdx is %d\n", static_cast<unsigned int>(overflowIdx));
+    assert(offset < pageSizeMap[9]);
+    Addr addr = 0;
+    auto it = std::upper_bound(pageSizeMap.begin(), pageSizeMap.end(), offset);
+    uint64_t chunkIdx = it - pageSizeMap.begin();
+    assert(chunkIdx >= 1);
+
+    for (int u = 0; u < 4; u++){   // 4B per MPFN
+        addr = (addr << 8) | (metaData[4 * chunkIdx + u]);
+    }
+
+    uint64_t leftover = offset - pageSizeMap[chunkIdx - 1];
+    uint64_t chunkSize = pageSizeMap[chunkIdx] - pageSizeMap[chunkIdx - 1];
+    assert(leftover < chunkSize);
+    if (chunkSize == 512) {
+        addr = (addr << 9) | (leftover & 0x1FF);
+    } else {
+        assert(chunkSize == 1024);
+        addr = (addr << 9) | (leftover & 0x3FF);
+    }
+    return addr;
+}
+
+
+/* ====== end for the new ====== */
 
 } // namespace memory
 } // namespace gem5

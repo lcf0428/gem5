@@ -604,4 +604,51 @@ Packet::configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size) {
     setType(DyL_writeCTE);
 }
 
+void
+Packet::configAsSubPkt(PacketPtr pkt, const uint32_t& idx) {
+    // assert(burst_size == 64);
+    uint32_t burst_size = 64;
+    
+    assert(getAddr() == pkt->getAddr());
+    Addr new_addr = (addr & ~(Addr(burst_size - 1))) + idx * burst_size;
+    new_addr = std::max(new_addr, addr);
+    uint64_t offset = new_addr - addr;
+    assert(new_addr < pkt->getAddr() + pkt->getSize());
+    
+    uint64_t start_loc = new_addr & 0x3F;
+    uint64_t new_size = std::min(64UL - start_loc, pkt->getAddr() + pkt->getSize() - new_addr);
+    
+    setAddr(new_addr);
+    setSizeForMC(new_size);
+    allocateForMC();
+    
+    memcpy(data, pkt->getPtr<uint8_t>() + offset, new_size);
+
+    new_backup = pkt;
+    newSetType(new_sub);
+    new_origin = new_addr;
+}
+
+void
+Packet::configAsReadMetaDataForNew(PacketPtr pkt, Addr addr) {
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC();
+    allocateForMC();
+    new_backup = pkt;
+    newSetType(new_readMetaData);
+}
+
+void
+Packet::configAsReadTwice(PacketPtr pkt, Addr addr, Addr origin_addr) {
+    assert(getSize() <= 64);
+    assert(addr % 64 == 0);
+    setAddr(addr);
+    setReadCmd();
+    allocateForMC();
+    new_backup = pkt;
+    newSetType(new_readTwice);
+    new_origin = origin_addr;
+}
+
 } // namespace gem5

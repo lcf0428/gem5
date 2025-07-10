@@ -298,6 +298,7 @@ class Packet : public Printable, public Extensible<Packet>
     typedef gem5::Flags<FlagsType> Flags;
     typedef uint32_t PacketTypeForDyL;
     typedef uint32_t PacketType;
+    typedef uint32_t PacketTypeForNew;
 
   private:
     enum : FlagsType
@@ -607,10 +608,34 @@ class Packet : public Printable, public Extensible<Packet>
     /* ===== special for new architecture ===== */
     PacketPtr new_backup;
 
-    std::unordered_map<uint64_t, std::vector<uint8_t>> newMetadataMap;  /* metaDataMap[PPN] -> get metadata */
+    uint64_t new_origin;  /* store the origin address to restore later */
 
+    std::unordered_map<uint64_t, std::vector<uint8_t>> newfunctionMetaDataMap;  /* metaDataMap[PPN] -> get metadata */
 
+    std::vector<uint8_t> newMetaData; /* the packet is guaranteed to only target for one page */
+    
+    enum : PacketTypeForNew
+    {
+        new_orig                   = 0x00000001,
+        new_auxiliary              = 0x00000002,
+        new_sub                    = 0x00000004,
+        new_readTwice              = 0x00000008,
+        new_readMetaData           = 0x00000010,
+        new_readPage               = 0x00000020,
+        new_writePage              = 0x00000040
+    };
 
+    PacketTypeForNew newPType;
+
+    uint32_t new_subPktCnt;  /* only used by aux_pkt to track the finished sub_pkt */
+
+    uint8_t old_type;   /* only used by sub_pkt */
+
+    Addr old_addr;
+
+    Addr newBlockAddr;
+
+    uint64_t suffixLen;
     /* ===== end for new ===== */
 
     /**
@@ -958,7 +983,14 @@ class Packet : public Printable, public Extensible<Packet>
            DyLPType(DyL_origin),
            DyLStatus(0),
            compressPageId(0),
-           usedForComp(0)
+           usedForComp(0),
+           new_backup(nullptr),
+           newPType(new_orig),
+           new_subPktCnt(0),
+           old_type(0),
+           old_addr(0),
+           newBlockAddr(0),
+           suffixLen(0)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -1007,7 +1039,14 @@ class Packet : public Printable, public Extensible<Packet>
            DyLPType(DyL_origin),
            DyLStatus(0),
            compressPageId(0),
-           usedForComp(0)
+           usedForComp(0),
+           new_backup(nullptr),
+           newPType(new_orig),
+           new_subPktCnt(0),
+           old_type(0),
+           old_addr(0),
+           newBlockAddr(0),
+           suffixLen(0)
     {
         flags.clear();
         if (req->hasPaddr()) {
@@ -1046,7 +1085,14 @@ class Packet : public Printable, public Extensible<Packet>
            DyLPType(DyL_origin),
            DyLStatus(0),
            compressPageId(0),
-           usedForComp(0)
+           usedForComp(0),
+           new_backup(nullptr),
+           newPType(new_orig),
+           new_subPktCnt(0),
+           old_type(0),
+           old_addr(0),
+           newBlockAddr(0),
+           suffixLen(0)
     {
         if (!clear_flags)
             flags.set(pkt->flags & COPY_FLAGS);
@@ -1106,7 +1152,14 @@ class Packet : public Printable, public Extensible<Packet>
         DyLPType(DyL_auxiliary),
         DyLStatus(0),
         compressPageId(0),
-        usedForComp(0)
+        usedForComp(0),
+        new_backup(pkt),
+        newPType(new_auxiliary),
+        new_subPktCnt(0),
+        old_type(0),
+        old_addr(0),
+        newBlockAddr(pkt->newBlockAddr),
+        suffixLen(pkt->suffixLen)
     {
         flags.set(pkt->flags & COPY_FLAGS);
 
@@ -1833,6 +1886,18 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size = 64);
 
+    /* ============== special for new architecture ============ */
+
+    void newSetType(const PacketTypeForNew& t) { newPType = t; }
+
+    void configAsSubPkt(PacketPtr pkt, const uint32_t& idx);
+
+    void configAsReadMetaDataForNew(PacketPtr pkt, Addr addr);
+
+    void configAsReadTwice(PacketPtr pkt, Addr addr, Addr origin_addr);
+
+
+    /* ============= end for new ============*/
 };
 
 } // namespace gem5

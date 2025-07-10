@@ -357,6 +357,11 @@ class AbstractMemory : public ClockedObject
      */
     void accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer);
 
+    /*
+     * perform an untimed memory access specially for the new architecture 
+    */
+    void accessForNew(PacketPtr pkt, uint8_t mode);
+
     /**
      * Perform an untimed memory read or write without changing
      * anything but the memory itself. No stats are affected by this
@@ -378,6 +383,12 @@ class AbstractMemory : public ClockedObject
      */
 
     void comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer);
+
+    /*
+     * perform a functional access specially for the new architecture
+     */
+
+    void functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr);
 
 
     /* ====== special function for compresso ====== */
@@ -447,6 +458,24 @@ class AbstractMemory : public ClockedObject
 
 
     /* ====== end for compresso ======*/
+
+    /* ====== special function for new architecture ===== */
+
+    uint8_t new_getTypeAM(const std::vector<uint8_t>& metaData, const uint8_t& cachelineIdx);
+
+    uint8_t new_getCoverageAM(const std::vector<uint8_t>& metaData);
+
+    std::vector<uint8_t> new_compress(const std::vector<uint8_t>& cacheline);
+
+    void new_decompress(std::vector<uint8_t>& data);
+
+    void new_restoreDataAM(std::vector<uint8_t>& compressed, uint8_t type);
+
+    std::vector<uint64_t> new_addressTranslationAM(const std::vector<uint8_t>& metaData, uint8_t cachelineIdx);
+
+    Addr new_calOverflowAddrAM(const std::vector<uint8_t>& metaData, uint8_t cachelineIdx);
+
+    /* ====== end for new ======*/
 };
 
 } // namespace memory

@@ -366,6 +366,9 @@ class MemCtrl : public qos::MemCtrl
     bool addToReadQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
+    bool addToReadQueueForNew(PacketPtr pkt, unsigned int pkt_count,
+                        MemInterface* mem_intr);
+
     /**
      * Decode the incoming pkt, create a mem_pkt and push to the
      * back of the write queue. \If the write q length is more than
@@ -384,6 +387,9 @@ class MemCtrl : public qos::MemCtrl
                          MemInterface* mem_intr);
 
     void addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
+                         MemInterface* mem_intr);
+
+    bool addToWriteQueueForNew(PacketPtr pkt, unsigned int pkt_count,
                          MemInterface* mem_intr);
 
     /**
@@ -414,6 +420,9 @@ class MemCtrl : public qos::MemCtrl
                                                 MemInterface* mem_intr);
 
     virtual void accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
+                                                MemInterface* mem_intr);
+
+    virtual void accessAndRespondForNew(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
     /**
      * Determine if there is a packet that can issue.
@@ -787,12 +796,39 @@ class MemCtrl : public qos::MemCtrl
 
     /* ======= end for dyLeCT ======= */
 
+    /* ======= start for the new architecture ====== */
+
+    uint64_t zeroAddr;
+    
+    std::list<uint64_t> fineGrainedFreeList;
+
+    std::vector<uint8_t> originMetaData;
+
+    std::vector<uint64_t> pageSizeMap;
+
+    bool blockedForNew;
+
+    Tick lastRecomprTick;
+
+    Tick recomprInterval;
+
+    uint32_t readBufferSizeForNew;
+
+    uint32_t writeBufferSizeForNew;
+
+    /* ====== end for the new architecture ======*/
+
     /* ======= start for the stats ====== */
     std::unordered_set<PPN> stat_page_used;
 
     uint64_t stat_used_bytes;
 
     uint64_t stat_max_used_bytes;
+
+
+    uint64_t normal_used;
+
+    uint64_t compress_used;
 
     /* ====== end for stats ====== */
 
@@ -1179,7 +1215,38 @@ class MemCtrl : public qos::MemCtrl
     void afterDecompForDyL(PacketPtr pkt, MemInterface* mem_intr);
 
     bool findSameElem(Addr addr);
-};
+    /* ====== end for DyLeCT ===== */
+    /* ====== start for new ===== */
+    
+    uint8_t new_getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
+    
+    void new_setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type);
+
+    uint8_t new_getCoverage(const std::vector<uint8_t>& metaData);
+
+    void new_allocateBlock(std::vector<uint8_t>& metaData, uint8_t index);
+
+    std::vector<uint64_t> new_addressTranslation(const std::vector<uint8_t>& metaData, uint8_t cacheLineIdx);
+
+    Addr calOverflowAddr(const std::vector<uint8_t>& metaData, uint8_t overflowIdx);
+
+    void new_restoreData(std::vector<uint8_t>& cacheLine, uint8_t type);
+
+    void new_updateMetaData(const std::vector<uint8_t>& compressed_data, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx, MemInterface* mem_intr);
+
+    void decompressForNew(std::vector<uint8_t>& cacheLine);
+
+    std::vector<uint8_t> compressForNew(const std::vector<uint8_t>& cacheLine);
+
+    void prepareMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr);
+
+    void assignToQueueForNew(PacketPtr pkt);
+
+    void issueWriteCmdForNew(PacketPtr pkt, Addr addr, unsigned size, MemInterface* mem_intr, bool recordStat = true);
+
+    void updateMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr);
+
+  };
 
 } // namespace memory
 } // namespace gem5
