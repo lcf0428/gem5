@@ -67,8 +67,9 @@ binary = os.path.join(
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
     # "../../Mibench/mibench/security/sha/sha",
     # "../../Mibench/mibench/office/stringsearch/search_large",
-    "../../Mibench/mibench/network/dijkstra/dijkstra_small",
+    # "../../Mibench/mibench/network/dijkstra/dijkstra_small",
     # "../../Mibench/mibench/consumer/typeset/lout-3.24/lout",
+    "../../Mibench/mibench/automotive/qsort/input_large.dat",
 )
 
 system.workload = SEWorkload.init_compatible(binary)
@@ -76,8 +77,9 @@ system.workload = SEWorkload.init_compatible(binary)
 # 创建进程
 process = Process()
 # process.cmd = [binary, "../../Mibench/mibench/security/sha/input_large.asc"]
-process.cmd = [binary, "/local/home/liuche/Mibench/mibench/network/dijkstra/input.dat"]
+# process.cmd = [binary, "/local/home/liuche/Mibench/mibench/network/dijkstra/input.dat"]
 # process.cmd = [binary]
+process.cmd = [binary, "/local/home/liuche/Mibench/mibench/automotive/qsort/input_large.dat"]
 system.cpu.workload = process
 system.cpu.createThreads()
 

@@ -60,12 +60,12 @@ namespace gem5
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
-        if (type == 0) {
-            return true;
-        } else {
-            return false;
-        }
-        // return false;
+        // if (type == 0) {
+        //     return true;
+        // } else {
+        //     return false;
+        // }
+        return false;
         // return true;
     }
 
@@ -3190,6 +3190,7 @@ MemCtrl::addToWriteQueueForNew(PacketPtr pkt, unsigned int pkt_count,
     // @todo, if a pkt size is larger than burst size, we might need a
     // different front end latency
     accessAndRespondForNew(pkt, frontendLatency, mem_intr);
+    return true;
 }
 
 void
@@ -5222,6 +5223,8 @@ MemCtrl::accessAndRespondForNew(PacketPtr pkt, Tick static_latency,
             // is still having a pointer to it
             pendingDelete.reset(real_recv_pkt);
         }
+        
+	    delete pkt;
     } else if (pkt->newPType == 0x04) {
         /* sub pkt */
         PacketPtr aux_pkt = pkt->new_backup;
@@ -9382,13 +9385,12 @@ MemCtrl::assignToQueueForNew(PacketPtr pkt) {
         // assert(pkt->getAddr() % 64 == 0);
 
         /* now the pkt is burst-size aligned */
-        if (!addToWriteQueueForNew(pkt, pkt_count, dram)) {
-            // If we are not already scheduled to get a request out of the
-            // queue, do so now
-            if (!nextReqEvent.scheduled()) {
-                DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                schedule(nextReqEvent, curTick());
-            }
+        addToWriteQueueForNew(pkt, pkt_count, dram);
+        // If we are not already scheduled to get a request out of the
+        // queue, do so now
+        if (!nextReqEvent.scheduled()) {
+            DPRINTF(MemCtrl, "Request scheduled immediately\n");
+            schedule(nextReqEvent, curTick());
         }
     } else {
         assert(pkt->isRead());
