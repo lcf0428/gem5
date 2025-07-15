@@ -646,10 +646,20 @@ class MemCtrl : public qos::MemCtrl
           return (hmap.count(addr) != 0);
         }
 
-        Addr chooseFirst() {
+        Addr chooseTarget() {
           assert(header->succ != tailer);
           ListNode* target = header->succ;
-          return target->addr;
+          uint32_t max_indicator = 0;
+          Addr res = target->addr;
+          while(target != tailer) {
+            uint32_t candi = (target->cacheLine[0] & 0x7F) + 64 * (target->cacheLine[3]);
+            if (max_indicator < candi) {
+              res = target->addr;
+              max_indicator = candi;
+            }
+            target = target->succ;
+          }
+          return res;
         }
 
       private:

@@ -9838,13 +9838,15 @@ MemCtrl::updateMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr) {
 void
 MemCtrl::readForRecompress(PacketPtr pkt, MemInterface* mem_intr) {
     PPN target_page = 0;
-    if (overflowPages.empty()) {
-        // printf("choose a overflowPage\n");
-        target_page = mcache.chooseFirst() / 64;
-    } else {
-        target_page = overflowPages.front();
-        overflowPages.pop_front();
-    }
+    /* TODO: maintain a overflowPages list */
+    // if (overflowPages.empty()) {
+    //     // printf("choose a overflowPage\n");
+    //     target_page = mcache.chooseTarget() / 64;
+    // } else {
+    //     target_page = overflowPages.front();
+    //     overflowPages.pop_front();
+    // }
+    target_page = mcache.chooseTarget() / 64;
 
     // printf("target_page is %d\n", target_page);
     std::vector<uint8_t> metaData(64, 0);
@@ -9878,6 +9880,21 @@ MemCtrl::recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData) {
     memcpy(compressed_page.data(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
     uint8_t coverage = new_getCoverage(metaData);
+
+    if (coverage == 0) {
+        printf("[warning]: the coverage is zero\n");
+        PacketPtr writeBlock = new Packet(pkt);
+        Addr block_addr = 0;
+        for (int u = 0; u < 4; u++) {   // 4B per MPFN
+            block_addr = (block_addr << 8) | (metaData[4 + u]);
+        }
+        block_addr = block_addr << 9;
+        uint64_t block_size = pageSizeMap[1] - pageSizeMap[0];
+        writeBlock->configAsWriteBlock(pkt, block_addr, block_size);
+        memset(writeBlock->getPtr<uint8_t>(), 0, block_size);
+        assignToQueueForNew(writeBlock);
+        return;
+    }
 
     std::vector<uint8_t> page(4096, 0);
 
