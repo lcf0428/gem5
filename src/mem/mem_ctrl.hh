@@ -646,6 +646,12 @@ class MemCtrl : public qos::MemCtrl
           return (hmap.count(addr) != 0);
         }
 
+        Addr chooseFirst() {
+          assert(header->succ != tailer);
+          ListNode* target = header->succ;
+          return target->addr;
+        }
+
       private:
         void update(ListNode* node) {
           node->prev->succ = node->succ;
@@ -815,16 +821,20 @@ class MemCtrl : public qos::MemCtrl
     uint32_t readBufferSizeForNew;
 
     uint32_t writeBufferSizeForNew;
+  
+    std::list<std::pair<PacketPtr, uint8_t>> waitQueueForNew;
+
+    std::list<PPN> overflowPages;
 
     /* ====== end for the new architecture ======*/
 
     /* ======= start for the stats ====== */
+
     std::unordered_set<PPN> stat_page_used;
 
     uint64_t stat_used_bytes;
 
     uint64_t stat_max_used_bytes;
-
 
     uint64_t normal_used;
 
@@ -1129,7 +1139,7 @@ class MemCtrl : public qos::MemCtrl
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
-    bool recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr);
+    bool recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool hasBlocked = false);
 
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
@@ -1246,6 +1256,9 @@ class MemCtrl : public qos::MemCtrl
 
     void updateMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr);
 
+    void readForRecompress(PacketPtr pkt, MemInterface* mem_intr);
+
+    void recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData);
   };
 
 } // namespace memory

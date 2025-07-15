@@ -622,7 +622,8 @@ class Packet : public Printable, public Extensible<Packet>
         new_readTwice              = 0x00000008,
         new_readMetaData           = 0x00000010,
         new_readPage               = 0x00000020,
-        new_writePage              = 0x00000040
+        new_writeBlock             = 0x00000040,
+        new_readBlock              = 0x00000080
     };
 
     PacketTypeForNew newPType;
@@ -636,6 +637,11 @@ class Packet : public Printable, public Extensible<Packet>
     Addr newBlockAddr;
 
     uint64_t suffixLen;
+
+    uint32_t pktIdx;     /* only used by readBlock */
+
+    uint64_t new_targetPage;  /* only used by readPage */
+
     /* ===== end for new ===== */
 
     /**
@@ -1896,6 +1902,11 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsReadTwice(PacketPtr pkt, Addr addr, Addr origin_addr);
 
+    void configAsReadPage(PacketPtr pkt, uint64_t size, uint32_t num_blocks, uint64_t target_page);
+
+    void configAsReadBlock(PacketPtr pkt, Addr addr, uint64_t size, uint32_t idx);
+
+    void configAsWriteBlock(PacketPtr pkt, Addr addr, uint64_t size);
 
     /* ============= end for new ============*/
 };

@@ -54,7 +54,7 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x57180;
+        // uintptr_t target_addr = 0x43bc0;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -1711,6 +1711,14 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
 
             assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
             std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+            // printf("[AM] ppn %d, the metaData is: \n", ppn);
+            // for (int k = 0; k < 64; k++) {
+            //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+            // }
+            // printf("\n");
+
             uint8_t type = new_getTypeAM(metaData, cachelineIdx);
             std::vector<uint8_t> cacheLine(64, 0);
 
@@ -1744,6 +1752,15 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
 
             new_restoreDataAM(cacheLine, type);
             assert(cacheLine.size() == 64);
+
+            // printf("[AM] the restored cacheline is :\n");
+            // for (int i = 0; i < cacheLine.size(); i++) {
+            //     if (i % 8 == 0) {
+            //         printf("\n");
+            //     }
+            //     printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
+            // }
+            // printf("\n");
 
             uint8_t loc = addr & 0x3F;
             uint64_t ofs = addr - pkt->getAddr();
@@ -1802,9 +1819,15 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
 
             std::vector<uint8_t> new_cacheLine = cacheLine;
 
-            if (type < 0b100) {
+            if (type < 0b11) {
                 /* compress the cacheline */
                 new_cacheLine = new_compress(cacheLine);
+            } else {
+                assert(new_cacheLine.size() == 64);
+            }
+
+            if (type != 0 && new_cacheLine.size() == 1) {
+                new_cacheLine = {0, 0, 0, 0, 126};
             }
 
             if (new_cacheLine.size() > 44) {
@@ -1844,6 +1867,7 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
                 }
                 printf("\n");
                 printf("the new_cacheline size is %d\n", new_cacheLine.size());
+                printf("the old type of cacheline is %d\n", static_cast<unsigned int>(type));
 
             }
 
@@ -1853,6 +1877,16 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
             if (pmemAddr) {
                 if (type >= 0b100 || translationRes[2] == 0) {
                     std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                    if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                        printf("actual write data is: \n");
+                        for (int is = 0; is < new_cacheLine.size(); is++) {
+                            if (is % 8 == 0) {
+                                printf("\n");
+                            }
+                            printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
+
+                        }
+                    }
                 } else {
                     uint64_t prefixLen = sizeMap[type] - translationRes[2];
                     if (prefixLen >= new_cacheLine.size()) {

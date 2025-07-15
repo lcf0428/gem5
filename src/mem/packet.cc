@@ -651,4 +651,36 @@ Packet::configAsReadTwice(PacketPtr pkt, Addr addr, Addr origin_addr) {
     new_origin = origin_addr;
 }
 
+void
+Packet::configAsReadPage(PacketPtr pkt, uint64_t size, uint32_t num_Blocks, uint64_t target_page) {
+    setReadCmd();
+    setSizeForMC(size);
+    allocateForMC();
+    new_backup = pkt;
+    newSetType(new_readPage);
+    new_subPktCnt = num_Blocks;
+    new_targetPage = target_page;
+}
+
+void
+Packet::configAsReadBlock(PacketPtr pkt, Addr addr, uint64_t size, uint32_t idx) {
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC(size);
+    allocateForMC();
+    new_backup = pkt;
+    newSetType(new_readBlock);
+    pktIdx = idx;
+}
+
+void
+Packet::configAsWriteBlock(PacketPtr pkt, Addr addr, uint64_t size) {
+    setWriteCmd();
+    setAddr(addr);
+    setSizeForMC(size);
+    allocateForMC();
+    new_backup = pkt;
+    newSetType(new_writeBlock);
+}
+
 } // namespace gem5
