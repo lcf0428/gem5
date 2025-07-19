@@ -54,7 +54,7 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x43bc0;
+        // uintptr_t target_addr = 0x1d7b00;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -532,7 +532,7 @@ AbstractMemory::access(PacketPtr pkt)
 }
 
 void
-AbstractMemory::accessForDyL(PacketPtr pkt)
+AbstractMemory::accessForDyL(PacketPtr pkt, PacketPtr aux_pkt)
 {
     if (pkt->cacheResponding()) {
         DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
@@ -564,48 +564,49 @@ AbstractMemory::accessForDyL(PacketPtr pkt)
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
 
     if (pkt->cmd == MemCmd::SwapReq) {
-        printf("have you enter this: swap req\n");
-        if (pkt->isAtomicOp()) {
-            if (pmemAddr) {
-                pkt->setData(host_addr);
-                (*(pkt->getAtomicOp()))(host_addr);
-            }
-        } else {
-            std::vector<uint8_t> overwrite_val(pkt->getSize());
-            uint64_t condition_val64;
-            uint32_t condition_val32;
+        panic("not support yet");
+        // printf("have you enter this: swap req\n");
+        // if (pkt->isAtomicOp()) {
+        //     if (pmemAddr) {
+        //         pkt->setData(host_addr);
+        //         (*(pkt->getAtomicOp()))(host_addr);
+        //     }
+        // } else {
+        //     std::vector<uint8_t> overwrite_val(pkt->getSize());
+        //     uint64_t condition_val64;
+        //     uint32_t condition_val32;
 
-            panic_if(!pmemAddr, "Swap only works if there is real memory " \
-                     "(i.e. null=False)");
+        //     panic_if(!pmemAddr, "Swap only works if there is real memory " \
+        //              "(i.e. null=False)");
 
-            bool overwrite_mem = true;
-            // keep a copy of our possible write value, and copy what is at the
-            // memory address into the packet
-            pkt->writeData(&overwrite_val[0]);
-            pkt->setData(host_addr);
+        //     bool overwrite_mem = true;
+        //     // keep a copy of our possible write value, and copy what is at the
+        //     // memory address into the packet
+        //     pkt->writeData(&overwrite_val[0]);
+        //     pkt->setData(host_addr);
 
-            if (pkt->req->isCondSwap()) {
-                if (pkt->getSize() == sizeof(uint64_t)) {
-                    condition_val64 = pkt->req->getExtraData();
-                    overwrite_mem = !std::memcmp(&condition_val64, host_addr,
-                                                 sizeof(uint64_t));
-                } else if (pkt->getSize() == sizeof(uint32_t)) {
-                    condition_val32 = (uint32_t)pkt->req->getExtraData();
-                    overwrite_mem = !std::memcmp(&condition_val32, host_addr,
-                                                 sizeof(uint32_t));
-                } else
-                    panic("Invalid size for conditional read/write\n");
-            }
+        //     if (pkt->req->isCondSwap()) {
+        //         if (pkt->getSize() == sizeof(uint64_t)) {
+        //             condition_val64 = pkt->req->getExtraData();
+        //             overwrite_mem = !std::memcmp(&condition_val64, host_addr,
+        //                                          sizeof(uint64_t));
+        //         } else if (pkt->getSize() == sizeof(uint32_t)) {
+        //             condition_val32 = (uint32_t)pkt->req->getExtraData();
+        //             overwrite_mem = !std::memcmp(&condition_val32, host_addr,
+        //                                          sizeof(uint32_t));
+        //         } else
+        //             panic("Invalid size for conditional read/write\n");
+        //     }
 
-            if (overwrite_mem)
-                std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
+        //     if (overwrite_mem)
+        //         std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
 
-            assert(!pkt->req->isInstFetch());
-            TRACE_PACKET("Read/Write");
-            if (collectStats) {
-                stats.numOther[pkt->req->requestorId()]++;
-            }
-        }
+        //     assert(!pkt->req->isInstFetch());
+        //     TRACE_PACKET("Read/Write");
+        //     if (collectStats) {
+        //         stats.numOther[pkt->req->requestorId()]++;
+        //     }
+        // }
     } else if (pkt->isRead()) {
         assert(!pkt->isWrite());
         if (pkt->isLLSC()) {
@@ -620,7 +621,7 @@ AbstractMemory::accessForDyL(PacketPtr pkt)
 
         if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0)) {
             // printf("Atomic read marker: ");
-            printf("marker:%lx\n", pkt);
+            printf("marker:%lx\n", aux_pkt);
             printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
             for (int ts = 0; ts < pkt->getSize(); ts++) {
@@ -650,7 +651,7 @@ AbstractMemory::accessForDyL(PacketPtr pkt)
 
                 if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0)) {
                     // printf("Atomic write marker: ");
-                    printf("marker:%lx\n", pkt);
+                    printf("marker:%lx\n", aux_pkt);
                     printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
@@ -684,7 +685,6 @@ AbstractMemory::accessForDyL(PacketPtr pkt)
 
 void
 AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer) {
-    // printf("enter the accessForCompr function: the pkt address is 0x%lx\n", pkt);
 
     assert(pkt->comprBackup);
     PacketPtr real_recv_pkt = pkt->comprBackup;
@@ -718,72 +718,73 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
     Addr addr = base_addr;
 
     if (pkt->cmd == MemCmd::SwapReq) {
-        assert(size == 64);
-        assert(base_addr % 64 == 0);
+        panic("not support yet");
+        // assert(size == 64);
+        // assert(base_addr % 64 == 0);
 
-        uint64_t ppn = addr >> 12;
+        // uint64_t ppn = addr >> 12;
 
-        assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+        // assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
 
-        std::vector<uint8_t> metaData = metaDataMap[ppn];
+        // std::vector<uint8_t> metaData = metaDataMap[ppn];
 
-        uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
-        uint8_t type = getType(metaData, cacheLineIdx);
+        // uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+        // uint8_t type = getType(metaData, cacheLineIdx);
 
-        std::vector<uint8_t> cacheLine(64, 0);
+        // std::vector<uint8_t> cacheLine(64, 0);
 
-        /* the pkt should be only covered by one cacheLine */
+        // /* the pkt should be only covered by one cacheLine */
 
-        memcpy(cacheLine.data(), pkt->getPtr<uint8_t>(), 64);
+        // memcpy(cacheLine.data(), pkt->getPtr<uint8_t>(), 64);
 
-        /* compress the cacheline */
-        std::vector<uint8_t> compressed = compress(cacheLine);
+        // /* compress the cacheline */
+        // std::vector<uint8_t> compressed = compress(cacheLine);
 
-        if (compressed.size() > 32) {
-            assert(compressed.size() == 64);
-        }
+        // if (compressed.size() > 32) {
+        //     assert(compressed.size() == 64);
+        // }
 
-        if (pageNum == ppn) {
-            assert(mPageBuffer.size() == metaData.size());
-            for (int temp = 0; temp < metaData.size(); temp++) {
-                assert(mPageBuffer[temp] == metaData[temp]);
-            }
-            uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
+        // if (pageNum == ppn) {
+        //     assert(mPageBuffer.size() == metaData.size());
+        //     for (int temp = 0; temp < metaData.size(); temp++) {
+        //         assert(mPageBuffer[temp] == metaData[temp]);
+        //     }
+        //     uint8_t* pageBuffer_addr = pageBuffer.data() + cacheLineIdx * 64;
 
-            memcpy(pageBuffer_addr, compressed.data(), sizeMap[type]);
+        //     memcpy(pageBuffer_addr, compressed.data(), sizeMap[type]);
 
-        } else {
-            std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
-            bool inInflate = cLStatus.first;
-            Addr real_addr = cLStatus.second;
+        // } else {
+        //     std::pair<bool, Addr> cLStatus = addressTranslation(metaData, cacheLineIdx);
+        //     bool inInflate = cLStatus.first;
+        //     Addr real_addr = cLStatus.second;
 
-            if (inInflate) {
-                type = 0b11;
-            }
+        //     if (inInflate) {
+        //         type = 0b11;
+        //     }
 
-            if (type != 0) {
-                if (!inInflate) {
-                    assert(compressed.size() <= sizeMap[type]);
-                }
+        //     if (type != 0) {
+        //         if (!inInflate) {
+        //             assert(compressed.size() <= sizeMap[type]);
+        //         }
 
-                uint8_t* host_addr = toHostAddr(real_addr);
+        //         uint8_t* host_addr = toHostAddr(real_addr);
 
-                if (pmemAddr) {
-                    if (type == 0b11) {
-                        std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
-                    } else {
-                        std::memcpy(host_addr, compressed.data(), compressed.size());
-                    }
-                }
-            }
-        }
-        if (!real_recv_pkt->isAtomicOp()) {
-            assert(!pkt->req->isInstFetch());
-            TRACE_PACKET("Read/Write");
-            if (collectStats) {
-                stats.numOther[pkt->req->requestorId()]++;
-            }
-        }
+        //         if (pmemAddr) {
+        //             if (type == 0b11) {
+        //                 std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+        //             } else {
+        //                 std::memcpy(host_addr, compressed.data(), compressed.size());
+        //             }
+        //         }
+        //     }
+        // }
+        // if (!real_recv_pkt->isAtomicOp()) {
+        //     assert(!pkt->req->isInstFetch());
+        //     TRACE_PACKET("Read/Write");
+        //     if (collectStats) {
+        //         stats.numOther[pkt->req->requestorId()]++;
+        //     }
+        // }
     } else if (pkt->isRead()) {
         assert(!pkt->isWrite());
         if (real_recv_pkt->isLLSC()) {
@@ -857,11 +858,9 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                    std::memcpy(cacheLine.data(), host_addr, 64);
                } else {
                    if (type != 0) {
-                    //    printf("Abstract Memory Line %d: type != 0, type is %d\n", __LINE__, static_cast<unsigned int>(type));
-
-                    //    printf("Abstract Memory Line %d: the host addr is 0x%llx\n", __LINE__, (uint64_t)host_addr);
-
                        std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
+
+                       // TODOA: there might be some cacheline span across two chunks
 
                     //    printf("Abstract Memory Line %d: finish read the compressed data\n", __LINE__);
                     //    printf("the read compressed data is :\n");
@@ -1043,19 +1042,11 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                     bool inInflate = cLStatus.first;
                     Addr real_addr = cLStatus.second;
 
-                    if (!inInflate && type != 0) {
-                        // printf("Abstract Memory Line %d: get the real addr 0x%lx\n", __LINE__, real_addr);
-                    }
-
                     if (inInflate) {
                         type = 0b11;
                     }
 
                     if (type != 0) {
-                        if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
-                            printf("if inInflate: %d\n", inInflate);
-                        }
-
                         if (!inInflate) {
                             // printf("the compressed size is %d\n", compressed.size());
                             // printf("the space is %d\n", sizeMap[type]);
@@ -1069,18 +1060,14 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                             printf("the real address is 0x%lx\n", reinterpret_cast<uint64_t>(real_addr));
                         }
 
-
-                        uint64_t test_size = 0;
                         if (pmemAddr) {
-                           if (type == 3) {
-                            //    printf("type = 3 \n");
-                            //    printf("host address %lx\n", reinterpret_cast<uint64_t>(host_addr));
+                            if (type == 3) {
+                                // TODOA
                                std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
-                               test_size = cacheLine.size();
-                           } else {
-                               std::memcpy(host_addr, compressed.data(), compressed.size());
-                               test_size = compressed.size();
-                           }
+                            } else {
+                                // TODOA
+                                std::memcpy(host_addr, compressed.data(), compressed.size());
+                            }
                         }
                     }
                 }
@@ -1380,6 +1367,11 @@ void
 AbstractMemory::functionalAccessForDyL(PacketPtr pkt, int mode) {
     assert(pkt->getAddrRange().isSubset(range));
 
+    if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0) && mode != 1) {
+        printf("[FAM] the pkt address is 0x%lx\n", pkt);
+        printf("[FAM] the mpa is 0x%lx\n", pkt->getAddr());  
+    }
+
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
 
     if (mode != 2) {
@@ -1414,6 +1406,21 @@ AbstractMemory::functionalAccessForDyL(PacketPtr pkt, int mode) {
             uint8_t* test_start = pkt->getPtr<uint8_t>();
             for (int i = 0; i < pkt->getSize(); i++) {
                 printf("%02x ", static_cast<unsigned int>(test_start[i]));
+            }
+            printf("\n");
+        }
+
+
+        if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0) && (mode == 2)) {
+
+            printf("the pkt itself:\n");
+            for (int i = 0; i < pkt->getSize(); i++) {
+                printf("%02x ", static_cast<unsigned int>(pkt->getPtr<uint8_t>()[i]));
+            }
+            printf("\n");
+            printf("for test\n");
+            for (int i = 0; i < pkt->getSize(); i++) {
+                printf("%02x ", static_cast<unsigned int>(host_addr[i]));
             }
             printf("\n");
         }

@@ -173,6 +173,8 @@ class SEBinaryWorkload:
         arguments: List[str] = [],
         simpoint: SimpointResource = None,
         checkpoint: Optional[Union[Path, CheckpointResource]] = None,
+        stdin_file: Optional[FileResource] = None,
+        env_list: Optional[List[str]] = None,
     ) -> None:
         """Set up the system to run a SimPoint workload.
 
@@ -208,6 +210,8 @@ class SEBinaryWorkload:
             binary=binary,
             arguments=arguments,
             checkpoint=checkpoint,
+            stdin_file=stdin_file,
+            env_list=env_list,
         )
 
     def get_simpoint(self) -> SimpointResource:
