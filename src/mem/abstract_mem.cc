@@ -857,10 +857,18 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                    type = 0b11;  // autually uncompressed;
                    std::memcpy(cacheLine.data(), host_addr, 64);
                } else {
-                   if (type != 0) {
-                       std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
-
-                       // TODOA: there might be some cacheline span across two chunks
+                    if (type != 0) {
+                        
+                        //  there might be some cacheline span across two chunks
+                        if (((real_addr & 0x1FF) + sizeMap[type]) > 512) {
+                            int offset = 512 - (real_addr & 0x1FF);
+                            std::memcpy(cacheLine.data(), host_addr, offset);
+                            Addr second_addr = secondAddressTranslation(metaData, cacheLineIdx);
+                            uint8_t* second_host_addr = toHostAddr(second_addr);
+                            std::memcpy(cacheLine.data() + offset, second_host_addr, sizeMap[type] - offset);
+                        } else {
+                            std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
+                        }       
 
                     //    printf("Abstract Memory Line %d: finish read the compressed data\n", __LINE__);
                     //    printf("the read compressed data is :\n");
@@ -879,15 +887,15 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
                 assert(cacheLine.size() == 64);
 
                 if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 1)) {
-                    printf("the real address is 0x%lx\n", reinterpret_cast<uint64_t>(real_addr));
-                    printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
-                    for (int u = 0; u < 8; u++) {
-                       for (int v = 0; v < 8; v++) {
-                           printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
-                       }
-                       printf("\n");
-                    }
-                    printf("\n");
+                    // printf("the real address is 0x%lx\n", reinterpret_cast<uint64_t>(real_addr));
+                    // printf("Abstract Memory Line %d: finish restore the data\n", __LINE__);
+                    // for (int u = 0; u < 8; u++) {
+                    //    for (int v = 0; v < 8; v++) {
+                    //        printf("%02x ", static_cast<unsigned int>(cacheLine[u * 8 + v]));
+                    //    }
+                    //    printf("\n");
+                    // }
+                    // printf("\n");
                 }
 
                 uint8_t loc = addr & 0x3F;
@@ -1062,11 +1070,25 @@ AbstractMemory::accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t page
 
                         if (pmemAddr) {
                             if (type == 3) {
-                                // TODOA
-                               std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+                                if (((real_addr & 0x1FF) + sizeMap[type]) > 512) {
+                                    int offset = 512 - (real_addr & 0x1FF);
+                                    std::memcpy(host_addr, cacheLine.data(), offset);
+                                    Addr second_addr = secondAddressTranslation(metaData, cacheLineIdx);
+                                    uint8_t* second_host_addr = toHostAddr(second_addr);
+                                    std::memcpy(second_host_addr, cacheLine.data() + offset, sizeMap[type] - offset);
+                                } else {
+                                    std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+                                }
                             } else {
-                                // TODOA
-                                std::memcpy(host_addr, compressed.data(), compressed.size());
+                                if (((real_addr & 0x1FF) + compressed.size()) > 512) {
+                                    int offset = 512 - (real_addr & 0x1FF);
+                                    std::memcpy(host_addr, compressed.data(), offset);
+                                    Addr second_addr = secondAddressTranslation(metaData, cacheLineIdx);
+                                    uint8_t* second_host_addr = toHostAddr(second_addr);
+                                    std::memcpy(second_host_addr, compressed.data() + offset, compressed.size() - offset);
+                                } else {
+                                    std::memcpy(host_addr, compressed.data(), compressed.size());
+                                }
                             }
                         }
                     }
@@ -1515,7 +1537,15 @@ AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64
                         // printf("Abstract Memory Line %d: type != 0, type is %d\n", __LINE__, static_cast<unsigned int>(type));
                         // printf("Abstract Memory Line %d: the host addr is 0x%llx\n", __LINE__, (uint64_t)host_addr);
 
-                        std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
+                        if (((real_addr & 0x1FF) + sizeMap[type]) > 512) {
+                            int offset = 512 - (real_addr & 0x1FF);
+                            std::memcpy(cacheLine.data(), host_addr, offset);
+                            Addr second_addr = secondAddressTranslation(metaData, cacheLineIdx);
+                            uint8_t* second_host_addr = toHostAddr(second_addr);
+                            std::memcpy(cacheLine.data() + offset, second_host_addr, sizeMap[type] - offset);
+                        } else {
+                            std::memcpy(cacheLine.data(), host_addr, sizeMap[type]);
+                        }      
                         // printf("Abstract Memory Line %d: finish read the compressed data\n", __LINE__);
                         // printf("the read compressed data is :\n");
                         // for (int ts = 0; ts < sizeMap[type]; ts++) {
@@ -1647,24 +1677,29 @@ AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64
                     // }
                     // printf("\n");
 
-                    uint64_t test_size = 0;
                     if (pmemAddr) {
                         if (type == 0b11) {
-                            std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
-                            test_size = cacheLine.size();
+                            if (((real_addr & 0x1FF) + sizeMap[type]) > 512) {
+                                int offset = 512 - (real_addr & 0x1FF);
+                                std::memcpy(host_addr, cacheLine.data(), offset);
+                                Addr second_addr = secondAddressTranslation(metaData, cacheLineIdx);
+                                uint8_t* second_host_addr = toHostAddr(second_addr);
+                                std::memcpy(second_host_addr, cacheLine.data() + offset, sizeMap[type] - offset);
+                            } else {
+                                std::memcpy(host_addr, cacheLine.data(), cacheLine.size());
+                            }
                         } else {
-                            std::memcpy(host_addr, compressed.data(), compressed.size());
-                            test_size = compressed.size();
+                            if (((real_addr & 0x1FF) + compressed.size()) > 512) {
+                                int offset = 512 - (real_addr & 0x1FF);
+                                std::memcpy(host_addr, compressed.data(), offset);
+                                Addr second_addr = secondAddressTranslation(metaData, cacheLineIdx);
+                                uint8_t* second_host_addr = toHostAddr(second_addr);
+                                std::memcpy(second_host_addr, compressed.data() + offset, compressed.size() - offset);
+                            } else {
+                                std::memcpy(host_addr, compressed.data(), compressed.size());
+                            }
                         }
                     }
-
-                    // for (int qw = 0; qw < test_size; qw++) {
-                    //     if (qw % 8 == 0) {
-                    //         printf("\n");
-                    //     }
-                    //     printf("%02x ", host_addr[qw]);
-                    // }
-                    // printf("\n");
                 } else {
                     /* all zero */
                 }
@@ -1692,240 +1727,510 @@ AbstractMemory::comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64
     }
 }
 
+/*
+    mode = 0: not blocked
+    mode = 1: blocked and only track the status
+    mode = 2: the original pkt blocked and become unblocked, pkt is actually the auxPKt and perform actual access to the memory
+*/
+
 void
-AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr) {
-    /* receive a pkt from outside world */
-    assert(pkt->new_backup);
-    PacketPtr real_recv_pkt = pkt->new_backup;
+AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr, int mode) {
 
-    /* get initial information */
-    unsigned size = pkt->getSize();
-    unsigned offset = pkt->getAddr() & (burst_size - 1);
-    unsigned int pkt_count = divCeil(offset + size, burst_size);
+    if (mode == 0) {
+        /* receive a pkt from outside world */
+        assert(pkt->new_backup);
+        PacketPtr real_recv_pkt = pkt->new_backup;
 
-    Addr base_addr = pkt->getAddr();
-    Addr addr = base_addr;
+        /* get initial information */
+        unsigned size = pkt->getSize();
+        unsigned offset = pkt->getAddr() & (burst_size - 1);
+        unsigned int pkt_count = divCeil(offset + size, burst_size);
 
-    /* prepare the auxiliary information */
-    std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
-    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->newfunctionMetaDataMap;
+        Addr base_addr = pkt->getAddr();
+        Addr addr = base_addr;
 
-    if (pkt->isRead()) {
-        /* process the pkt in order */
-        for (unsigned int i = 0; i < pkt_count; i++) {
-            uint64_t ppn = addr >> 12;
-            uint8_t cachelineIdx = (addr >> 6) & 0x3F;
+        /* prepare the auxiliary information */
+        std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
+        std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->newfunctionMetaDataMap;
 
-            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
-            std::vector<uint8_t> metaData = metaDataMap[ppn];
+        if (pkt->isRead()) {
+            /* process the pkt in order */
+            for (unsigned int i = 0; i < pkt_count; i++) {
+                uint64_t ppn = addr >> 12;
+                uint8_t cachelineIdx = (addr >> 6) & 0x3F;
 
-            // printf("[AM] ppn %d, the metaData is: \n", ppn);
-            // for (int k = 0; k < 64; k++) {
-            //     printf("%02x",static_cast<unsigned>(metaData[k]));
+                assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+                std::vector<uint8_t> metaData = metaDataMap[ppn];
 
-            // }
-            // printf("\n");
+                // printf("[AM] ppn %d, the metaData is: \n", ppn);
+                // for (int k = 0; k < 64; k++) {
+                //     printf("%02x",static_cast<unsigned>(metaData[k]));
 
-            uint8_t type = new_getTypeAM(metaData, cachelineIdx);
-            std::vector<uint8_t> cacheLine(64, 0);
+                // }
+                // printf("\n");
 
-            std::vector<uint64_t> translationRes(3, 0);
-            translationRes[0] = zeroAddr;
-            if (new_getCoverageAM(metaData) > cachelineIdx) {
-                translationRes = new_addressTranslationAM(metaData, cachelineIdx);
-            } else {
-                assert(type == 0);
-            }
-            uint8_t* host_origin_addr = toHostAddr(translationRes[0]);
-            
-            if (type >= 0b100) {
-                std::memcpy(cacheLine.data(), host_origin_addr, 1);
-                uint8_t overflowIdx = cacheLine[0];
+                uint8_t type = new_getTypeAM(metaData, cachelineIdx);
+                std::vector<uint8_t> cacheLine(64, 0);
 
-                Addr overflow_addr = new_calOverflowAddrAM(metaData, overflowIdx);
-                uint8_t* host_overflow_addr = toHostAddr(overflow_addr);
-                std::memcpy(cacheLine.data(), host_overflow_addr, 64);
-            } else {
-                assert(sizeMap[type] > translationRes[2]);
-                if (translationRes[2] == 0) {
-                    std::memcpy(cacheLine.data(), host_origin_addr, sizeMap[type]);   
+                std::vector<uint64_t> translationRes(3, 0);
+                translationRes[0] = zeroAddr;
+                if (new_getCoverageAM(metaData) > cachelineIdx) {
+                    translationRes = new_addressTranslationAM(metaData, cachelineIdx);
                 } else {
-                    uint64_t prefixLen = sizeMap[type] - translationRes[2];
-                    std::memcpy(cacheLine.data(), host_origin_addr, prefixLen);
-                    uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
-                    std::memcpy(cacheLine.data() + prefixLen, host_new_block_addr, translationRes[2]);
+                    assert(type == 0);
                 }
+                uint8_t* host_origin_addr = toHostAddr(translationRes[0]);
+                
+                if (type >= 0b100) {
+                    std::memcpy(cacheLine.data(), host_origin_addr, 1);
+                    uint8_t overflowIdx = cacheLine[0];
+
+                    Addr overflow_addr = new_calOverflowAddrAM(metaData, overflowIdx);
+                    uint8_t* host_overflow_addr = toHostAddr(overflow_addr);
+                    std::memcpy(cacheLine.data(), host_overflow_addr, 64);
+                } else {
+                    assert(sizeMap[type] > translationRes[2]);
+                    if (translationRes[2] == 0) {
+                        std::memcpy(cacheLine.data(), host_origin_addr, sizeMap[type]);   
+                    } else {
+                        uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                        std::memcpy(cacheLine.data(), host_origin_addr, prefixLen);
+                        uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
+                        std::memcpy(cacheLine.data() + prefixLen, host_new_block_addr, translationRes[2]);
+                    }
+                }
+
+                new_restoreDataAM(cacheLine, type);
+                assert(cacheLine.size() == 64);
+
+                // printf("[AM] the restored cacheline is :\n");
+                // for (int i = 0; i < cacheLine.size(); i++) {
+                //     if (i % 8 == 0) {
+                //         printf("\n");
+                //     }
+                //     printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
+                // }
+                // printf("\n");
+
+                uint8_t loc = addr & 0x3F;
+                uint64_t ofs = addr - pkt->getAddr();
+                size_t size = std::min(pkt->getSize() - ofs, 64UL - loc);
+                // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+                pkt->setDataForMC(cacheLine.data() + loc, ofs, size);
+
+                addr = (addr | (burst_size - 1)) + 1;
             }
 
-            new_restoreDataAM(cacheLine, type);
-            assert(cacheLine.size() == 64);
-
-            // printf("[AM] the restored cacheline is :\n");
-            // for (int i = 0; i < cacheLine.size(); i++) {
-            //     if (i % 8 == 0) {
-            //         printf("\n");
-            //     }
-            //     printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-            // }
-            // printf("\n");
-
-            uint8_t loc = addr & 0x3F;
-            uint64_t ofs = addr - pkt->getAddr();
-            size_t size = std::min(pkt->getSize() - ofs, 64UL - loc);
-            // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
-            pkt->setDataForMC(cacheLine.data() + loc, ofs, size);
-
-            addr = (addr | (burst_size - 1)) + 1;
-        }
-
-        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
-            printf("Functional read: ");
-            uint8_t* start = pkt->getPtr<uint8_t>();
-            for (int ts = 0; ts < pkt->getSize(); ts++) {
-            printf("%02x ", static_cast<unsigned int>(start[ts]));
-            }
-            printf("\n");
-        }
-
-
-        TRACE_PACKET("Read");
-        real_recv_pkt->makeResponse();
-    } else if (pkt->isWrite()) {  
-        /* assert the pkt should be burst_size/cacheline aligned */
-        assert(offset == 0);
-        assert((size & (burst_size - 1)) == 0);
-        assert(pkt_count == (size / burst_size));
-
-        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
-            printf("Functional write: ");
-            uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
-            for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
-            printf("%02x ", static_cast<unsigned int>(start[ts]));
-            }
-            printf("\n");
-        }
-
-        for (unsigned int i = 0; i < pkt_count; i++) {
-            uint64_t ppn = addr >> 12;
-            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
-            
-            assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
-            std::vector<uint8_t> metaData = metaDataMap[ppn];
-
-            // printf("cacheLineIdx is %d\n", cacheLineIdx);
-            // printf("coverage %d\n", new_getCoverageAM(metaData));
-
-            assert(cacheLineIdx < new_getCoverageAM(metaData));
-            uint8_t type = new_getTypeAM(metaData, cacheLineIdx);
-
-            std::vector<uint8_t> cacheLine(64, 0);
-
-            uint64_t ofs = addr - pkt->getAddr();
-
-            pkt->writeDataForMC(cacheLine.data(), ofs, 64);
-
-            std::vector<uint8_t> new_cacheLine = cacheLine;
-
-            if (type < 0b11) {
-                /* compress the cacheline */
-                new_cacheLine = new_compress(cacheLine);
-            } else {
-                assert(new_cacheLine.size() == 64);
-            }
-
-            if (type != 0 && new_cacheLine.size() == 1) {
-                new_cacheLine = {0, 0, 0, 0, 126};
-            }
-
-            if (new_cacheLine.size() > 44) {
-                assert(new_cacheLine.size() == 64);
-            }
-
-            // printf("the metadata is :\n");
-            // for (int k = 0; k < 64; k++) {
-            //     printf("%02x",static_cast<unsigned>(metaData[k]));
-
-            // }
-            // printf("\n");
-
-            std::vector<uint64_t> translationRes = new_addressTranslationAM(metaData, cacheLineIdx);
-  
-
-            uint8_t* origin_host_addr = toHostAddr(translationRes[0]);
-
-            Addr real_addr = translationRes[0];
-
-            if (type >= 0b100) {
-                uint8_t overflowIdx = 0;
-                std::memcpy(&overflowIdx, origin_host_addr, 1);
-                real_addr = new_calOverflowAddrAM(metaData, overflowIdx);
-                assert(new_cacheLine.size() == 64);
-            }
-
-            uint8_t* real_host_addr = toHostAddr(real_addr);
-
-            if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
-                printf("the cacheLineIdx is %d\n", static_cast<unsigned int>(cacheLineIdx));
-                printf("the origin space data resides is 0x%lx\n", translationRes[0]);
-                printf("the real mpa address is 0x%lx\n", real_addr);
-                printf("ppn is %d, the metadata is:\n", ppn);
-                for (int k = 0; k < 64; k++) {
-                    printf("%02x",static_cast<unsigned>(metaData[k]));
+            if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
+                printf("Functional read: ");
+                uint8_t* start = pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
                 }
                 printf("\n");
-                printf("the new_cacheline size is %d\n", new_cacheLine.size());
-                printf("the old type of cacheline is %d\n", static_cast<unsigned int>(type));
-
             }
 
 
+            TRACE_PACKET("Read");
+            real_recv_pkt->makeResponse();
+        } else if (pkt->isWrite()) {  
+            /* assert the pkt should be burst_size/cacheline aligned */
+            assert(offset == 0);
+            assert((size & (burst_size - 1)) == 0);
+            assert(pkt_count == (size / burst_size));
+
+            if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
+                printf("Functional write: ");
+                uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
+                }
+                printf("\n");
+            }
+
+            for (unsigned int i = 0; i < pkt_count; i++) {
+                uint64_t ppn = addr >> 12;
+                uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+                
+                assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+                std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+                // printf("cacheLineIdx is %d\n", cacheLineIdx);
+                // printf("coverage %d\n", new_getCoverageAM(metaData));
+
+                assert(cacheLineIdx < new_getCoverageAM(metaData));
+                uint8_t type = new_getTypeAM(metaData, cacheLineIdx);
+
+                std::vector<uint8_t> cacheLine(64, 0);
+
+                uint64_t ofs = addr - pkt->getAddr();
+
+                pkt->writeDataForMC(cacheLine.data(), ofs, 64);
+
+                std::vector<uint8_t> new_cacheLine = cacheLine;
+
+                if (type < 0b11) {
+                    /* compress the cacheline */
+                    new_cacheLine = new_compress(cacheLine);
+                } else {
+                    assert(new_cacheLine.size() == 64);
+                }
+
+                if (type != 0 && new_cacheLine.size() == 1) {
+                    new_cacheLine = {0, 0, 0, 0, 126};
+                }
+
+                if (new_cacheLine.size() > 44) {
+                    assert(new_cacheLine.size() == 64);
+                }
+
+                // printf("the metadata is :\n");
+                // for (int k = 0; k < 64; k++) {
+                //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                // }
+                // printf("\n");
+
+                std::vector<uint64_t> translationRes = new_addressTranslationAM(metaData, cacheLineIdx);
+    
+
+                uint8_t* origin_host_addr = toHostAddr(translationRes[0]);
+
+                Addr real_addr = translationRes[0];
+
+                if (type >= 0b100) {
+                    uint8_t overflowIdx = 0;
+                    std::memcpy(&overflowIdx, origin_host_addr, 1);
+                    real_addr = new_calOverflowAddrAM(metaData, overflowIdx);
+                    assert(new_cacheLine.size() == 64);
+                }
+
+                uint8_t* real_host_addr = toHostAddr(real_addr);
+
+                if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                    printf("the cacheLineIdx is %d\n", static_cast<unsigned int>(cacheLineIdx));
+                    printf("the origin space data resides is 0x%lx\n", translationRes[0]);
+                    printf("the real mpa address is 0x%lx\n", real_addr);
+                    printf("ppn is %d, the metadata is:\n", ppn);
+                    for (int k = 0; k < 64; k++) {
+                        printf("%02x",static_cast<unsigned>(metaData[k]));
+                    }
+                    printf("\n");
+                    printf("the new_cacheline size is %d\n", new_cacheLine.size());
+                    printf("the old type of cacheline is %d\n", static_cast<unsigned int>(type));
+
+                }
 
 
-            if (pmemAddr) {
-                if (type >= 0b100 || translationRes[2] == 0) {
-                    std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
-                    if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
-                        printf("actual write data is: \n");
-                        for (int is = 0; is < new_cacheLine.size(); is++) {
-                            if (is % 8 == 0) {
-                                printf("\n");
+
+
+                if (pmemAddr) {
+                    if (type >= 0b100 || translationRes[2] == 0) {
+                        std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                            printf("actual write data is: \n");
+                            for (int is = 0; is < new_cacheLine.size(); is++) {
+                                if (is % 8 == 0) {
+                                    printf("\n");
+                                }
+                                printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
+
                             }
-                            printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
-
+                        }
+                    } else {
+                        uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                        if (prefixLen >= new_cacheLine.size()) {
+                            std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                        } else {
+                            std::memcpy(real_host_addr, new_cacheLine.data(), prefixLen);
+                            uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
+                            std::memcpy(host_new_block_addr, new_cacheLine.data() + prefixLen, new_cacheLine.size() - prefixLen);
                         }
                     }
-                } else {
-                    uint64_t prefixLen = sizeMap[type] - translationRes[2];
-                    if (prefixLen >= new_cacheLine.size()) {
-                        std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
-                    } else {
-                        std::memcpy(real_host_addr, new_cacheLine.data(), prefixLen);
-                        uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
-                        std::memcpy(host_new_block_addr, new_cacheLine.data() + prefixLen, new_cacheLine.size() - prefixLen);
-                    }
                 }
+
+                Addr old_addr = addr;
+                addr = (addr | (burst_size - 1)) + 1;
+                assert(addr == old_addr + burst_size);
             }
 
-            Addr old_addr = addr;
-            addr = (addr | (burst_size - 1)) + 1;
-            assert(addr == old_addr + burst_size);
+            TRACE_PACKET("Write");
+            real_recv_pkt->makeResponse();
+        } else if (pkt->isPrint()) {
+            uint8_t *host_addr = toHostAddr(real_recv_pkt->getAddr());
+            Packet::PrintReqState *prs =
+                dynamic_cast<Packet::PrintReqState*>(pkt->senderState);
+            assert(prs);
+            // Need to call printLabels() explicitly since we're not going
+            // through printObj().
+            prs->printLabels();
+            // Right now we just print the single byte at the specified address.
+            ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+        } else {
+            panic("AbstractMemory: unimplemented functional command %s",
+                pkt->cmdString());
         }
 
-        TRACE_PACKET("Write");
-        real_recv_pkt->makeResponse();
-    } else if (pkt->isPrint()) {
-        uint8_t *host_addr = toHostAddr(real_recv_pkt->getAddr());
-        Packet::PrintReqState *prs =
-            dynamic_cast<Packet::PrintReqState*>(pkt->senderState);
-        assert(prs);
-        // Need to call printLabels() explicitly since we're not going
-        // through printObj().
-        prs->printLabels();
-        // Right now we just print the single byte at the specified address.
-        ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+    } else if (mode == 1) {
+        /* the current pkt is real_recv_pkt */
+        /* receive a pkt from outside world */
+
+        /* get initial information */
+        unsigned size = pkt->getSize();
+        unsigned offset = pkt->getAddr() & (burst_size - 1);
+        unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+        Addr base_addr = pkt->getAddr();
+        Addr addr = base_addr;
+
+        /* prepare the auxiliary information */
+        std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
+        std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->newfunctionMetaDataMap;
+
+        if (pkt->isRead()) {
+            /* process the pkt in order */
+            for (unsigned int i = 0; i < pkt_count; i++) {
+                uint64_t ppn = addr >> 12;
+                uint8_t cachelineIdx = (addr >> 6) & 0x3F;
+
+                assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+                std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+                // printf("[AM] ppn %d, the metaData is: \n", ppn);
+                // for (int k = 0; k < 64; k++) {
+                //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                // }
+                // printf("\n");
+
+                uint8_t type = new_getTypeAM(metaData, cachelineIdx);
+                std::vector<uint8_t> cacheLine(64, 0);
+
+                std::vector<uint64_t> translationRes(3, 0);
+                translationRes[0] = zeroAddr;
+                if (new_getCoverageAM(metaData) > cachelineIdx) {
+                    translationRes = new_addressTranslationAM(metaData, cachelineIdx);
+                } else {
+                    assert(type == 0);
+                }
+                uint8_t* host_origin_addr = toHostAddr(translationRes[0]);
+                
+                if (type >= 0b100) {
+                    std::memcpy(cacheLine.data(), host_origin_addr, 1);
+                    uint8_t overflowIdx = cacheLine[0];
+
+                    Addr overflow_addr = new_calOverflowAddrAM(metaData, overflowIdx);
+                    uint8_t* host_overflow_addr = toHostAddr(overflow_addr);
+                    std::memcpy(cacheLine.data(), host_overflow_addr, 64);
+                } else {
+                    assert(sizeMap[type] > translationRes[2]);
+                    if (translationRes[2] == 0) {
+                        std::memcpy(cacheLine.data(), host_origin_addr, sizeMap[type]);   
+                    } else {
+                        uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                        std::memcpy(cacheLine.data(), host_origin_addr, prefixLen);
+                        uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
+                        std::memcpy(cacheLine.data() + prefixLen, host_new_block_addr, translationRes[2]);
+                    }
+                }
+
+                new_restoreDataAM(cacheLine, type);
+                assert(cacheLine.size() == 64);
+
+                // printf("[AM] the restored cacheline is :\n");
+                // for (int i = 0; i < cacheLine.size(); i++) {
+                //     if (i % 8 == 0) {
+                //         printf("\n");
+                //     }
+                //     printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
+                // }
+                // printf("\n");
+
+                uint8_t loc = addr & 0x3F;
+                uint64_t ofs = addr - pkt->getAddr();
+                size_t size = std::min(pkt->getSize() - ofs, 64UL - loc);
+                // printf("Abstract Memory Line %d: start set data for MC, ofs is %lld, loc is %d, size is %ld\n", __LINE__, ofs, loc, size);
+                pkt->setDataForMC(cacheLine.data() + loc, ofs, size);
+
+                addr = (addr | (burst_size - 1)) + 1;
+            }
+
+            if (isAddressCoveredForAM(pkt->getAddr(),pkt->getSize(), 0)) {
+                printf("Functional read: ");
+                uint8_t* start = pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
+                }
+                printf("\n");
+            }
+
+
+            TRACE_PACKET("Read");
+            pkt->makeResponse();
+        } else if (pkt->isWrite()) {  
+            TRACE_PACKET("Write");
+            pkt->makeResponse();
+        } else if (pkt->isPrint()) {
+            uint8_t *host_addr = toHostAddr(pkt->getAddr());
+            Packet::PrintReqState *prs =
+                dynamic_cast<Packet::PrintReqState*>(pkt->senderState);
+            assert(prs);
+            // Need to call printLabels() explicitly since we're not going
+            // through printObj().
+            prs->printLabels();
+            // Right now we just print the single byte at the specified address.
+            ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+        } else {
+            panic("AbstractMemory: unimplemented functional command %s",
+                pkt->cmdString());
+        }
     } else {
-        panic("AbstractMemory: unimplemented functional command %s",
-              pkt->cmdString());
+        /*  the mode = 2*/
+        assert(pkt->isWrite());
+        assert(pkt->new_backup);
+        PacketPtr real_recv_pkt = pkt->new_backup;
+
+        /* get initial information */
+        unsigned size = pkt->getSize();
+        unsigned offset = pkt->getAddr() & (burst_size - 1);
+        unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+        Addr base_addr = pkt->getAddr();
+        Addr addr = base_addr;
+
+        /* prepare the auxiliary information */
+        std::vector<uint8_t> sizeMap = {1, 22, 44, 64};
+        std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMap = pkt->newfunctionMetaDataMap;
+
+        if (pkt->isRead()) {
+            /* do nothing */
+        } else if (pkt->isWrite()) {  
+            /* assert the pkt should be burst_size/cacheline aligned */
+            assert(offset == 0);
+            assert((size & (burst_size - 1)) == 0);
+            assert(pkt_count == (size / burst_size));
+
+            if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
+                printf("Functional write: ");
+                uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+                for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+                printf("%02x ", static_cast<unsigned int>(start[ts]));
+                }
+                printf("\n");
+            }
+
+            for (unsigned int i = 0; i < pkt_count; i++) {
+                uint64_t ppn = addr >> 12;
+                uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+                
+                assert(metaDataMap.find(ppn) != metaDataMap.end());  /* the metaData info should be ready by this point */
+                std::vector<uint8_t> metaData = metaDataMap[ppn];
+
+                // printf("cacheLineIdx is %d\n", cacheLineIdx);
+                // printf("coverage %d\n", new_getCoverageAM(metaData));
+
+                assert(cacheLineIdx < new_getCoverageAM(metaData));
+                uint8_t type = new_getTypeAM(metaData, cacheLineIdx);
+
+                std::vector<uint8_t> cacheLine(64, 0);
+
+                uint64_t ofs = addr - pkt->getAddr();
+
+                pkt->writeDataForMC(cacheLine.data(), ofs, 64);
+
+                std::vector<uint8_t> new_cacheLine = cacheLine;
+
+                if (type < 0b11) {
+                    /* compress the cacheline */
+                    new_cacheLine = new_compress(cacheLine);
+                } else {
+                    assert(new_cacheLine.size() == 64);
+                }
+
+                if (type != 0 && new_cacheLine.size() == 1) {
+                    new_cacheLine = {0, 0, 0, 0, 126};
+                }
+
+                if (new_cacheLine.size() > 44) {
+                    assert(new_cacheLine.size() == 64);
+                }
+
+                // printf("the metadata is :\n");
+                // for (int k = 0; k < 64; k++) {
+                //     printf("%02x",static_cast<unsigned>(metaData[k]));
+
+                // }
+                // printf("\n");
+
+                std::vector<uint64_t> translationRes = new_addressTranslationAM(metaData, cacheLineIdx);
+    
+
+                uint8_t* origin_host_addr = toHostAddr(translationRes[0]);
+
+                Addr real_addr = translationRes[0];
+
+                if (type >= 0b100) {
+                    uint8_t overflowIdx = 0;
+                    std::memcpy(&overflowIdx, origin_host_addr, 1);
+                    real_addr = new_calOverflowAddrAM(metaData, overflowIdx);
+                    assert(new_cacheLine.size() == 64);
+                }
+
+                uint8_t* real_host_addr = toHostAddr(real_addr);
+
+                if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                    printf("the cacheLineIdx is %d\n", static_cast<unsigned int>(cacheLineIdx));
+                    printf("the origin space data resides is 0x%lx\n", translationRes[0]);
+                    printf("the real mpa address is 0x%lx\n", real_addr);
+                    printf("ppn is %d, the metadata is:\n", ppn);
+                    for (int k = 0; k < 64; k++) {
+                        printf("%02x",static_cast<unsigned>(metaData[k]));
+                    }
+                    printf("\n");
+                    printf("the new_cacheline size is %d\n", new_cacheLine.size());
+                    printf("the old type of cacheline is %d\n", static_cast<unsigned int>(type));
+
+                }
+
+
+
+
+                if (pmemAddr) {
+                    if (type >= 0b100 || translationRes[2] == 0) {
+                        std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                            printf("actual write data is: \n");
+                            for (int is = 0; is < new_cacheLine.size(); is++) {
+                                if (is % 8 == 0) {
+                                    printf("\n");
+                                }
+                                printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
+
+                            }
+                        }
+                    } else {
+                        uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                        if (prefixLen >= new_cacheLine.size()) {
+                            std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
+                        } else {
+                            std::memcpy(real_host_addr, new_cacheLine.data(), prefixLen);
+                            uint8_t* host_new_block_addr = toHostAddr(translationRes[1]);
+                            std::memcpy(host_new_block_addr, new_cacheLine.data() + prefixLen, new_cacheLine.size() - prefixLen);
+                        }
+                    }
+                }
+
+                Addr old_addr = addr;
+                addr = (addr | (burst_size - 1)) + 1;
+                assert(addr == old_addr + burst_size);
+            }
+        } else if (pkt->isPrint()) {
+            /*do nothing */
+        } else {
+            panic("AbstractMemory: unimplemented functional command %s",
+                pkt->cmdString());
+        }
+
     }
 
 }
@@ -2414,6 +2719,64 @@ AbstractMemory::addressTranslation(const std::vector<uint8_t>& metaData, uint8_t
 
     // printf("the generate addr is 0x%llx\n", addr);
     return std::make_pair(in_inflate, addr);
+}
+
+
+Addr
+AbstractMemory::secondAddressTranslation(const std::vector<uint8_t>& metaData, uint8_t index) {
+    // printf("enter the secondary address translation function\n");
+    std::vector<uint8_t> sizeMap = {0, 8, 32, 64};
+
+    assert(metaData.size() == 64);
+    uint64_t origin_size = ((metaData[0] & (0x0F)) << 8) | metaData[1];
+    uint8_t valid_inflate_num = (metaData[63] & ((0b1 << 5) - 1));  // use last 5 bit to store the counter
+    assert(valid_inflate_num <= 17);
+    assert(origin_size + valid_inflate_num * 64 <= 4096);
+
+    Addr addr = 0;
+    bool in_inflate = false;
+    uint8_t loc = 0;
+
+    /* check the inflate room */
+    for (uint8_t i = 0; i < valid_inflate_num; i++) {
+        uint8_t iIdx = ((i * 6) / 8) + 50;
+        uint8_t iLoc = (i * 6) % 8;
+        uint8_t candi = 0;
+        if (iLoc > 2) {
+            int prefix = 8 - iLoc;
+            int suffix = 6 - prefix;
+            candi = (metaData[iIdx] & ((1 << prefix) - 1)) << suffix;
+            candi = candi | ((metaData[iIdx + 1] >> (8 - suffix)) & ((1 << suffix) - 1));
+        } else {
+            candi = (metaData[iIdx] >> (2 - iLoc)) & 0x3F;
+        }
+        if (candi == index) {
+            assert(in_inflate == false);
+            in_inflate = true;
+            loc = i;
+        }
+    }
+
+    assert(!in_inflate);
+
+    uint64_t sumSize = 0;
+    for (uint8_t u = 0; u < index; u++) {
+        uint8_t type = getType(metaData, u);
+        sumSize += sizeMap[type];
+    }
+
+    uint8_t old_chunkIdx = sumSize / 512;
+
+    uint8_t cur_type = getType(metaData, index);
+    
+    uint8_t chunkIdx = (sumSize + sizeMap[cur_type]) / 512;
+
+    assert(chunkIdx == old_chunkIdx + 1);
+
+    for (int u = 0; u < 4; u++){   // 4B per MPFN
+        addr = (addr << 8) | (metaData[2 + 4 * chunkIdx + u]);
+    }
+    return (addr << 9);
 }
 
 void

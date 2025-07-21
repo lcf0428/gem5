@@ -3563,7 +3563,8 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
 
     /* initial an auxiliary pkt for next steps */
     PacketPtr auxPkt = new Packet(pkt, curTick());
-    // printf("create auxPkt %lx for pkt %lx\n", reinterpret_cast<uint64_t>(auxPkt), reinterpret_cast<uint64_t>(pkt));
+    auxPkt->allocateForMC();
+    memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
     DPRINTF(MemCtrl, "(pkt) Line %d, the aux pkt %lx for the request %s\n", __LINE__, auxPkt, pkt->cmdString());
     DPRINTF(MemCtrl, "the auxPkt is %s\n", auxPkt->cmdString());
@@ -3575,8 +3576,6 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
         printf("%lx\n", auxPkt);
         fflush(stdout);
     }
-
-    memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
     if (hasBlocked) {
         auxPkt->comprTick = pkt->comprTick;  /* update the real access time if current pkt is blocked */
@@ -3639,6 +3638,7 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
 
     PacketPtr auxPkt = new Packet(pkt);
     auxPkt->DyLBackup = pkt->getAddr();
+    auxPkt->allocateForMC();
     memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
     // calculate the address of the CTE
@@ -3958,6 +3958,9 @@ MemCtrl::recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked) {
         if (blockedNum + pkt_count <= std::min(writeBufferSizeForNew, readBufferSizeForNew)) {
             blockedNum += pkt_count;
             waitQueueForNew.emplace_back(std::make_pair(pkt, 1));
+            if (pkt->isWrite()) {
+                inProcessWritePkt.emplace_back(pkt);
+            }
             if (!blockedForNew) {
                 blockedForNew = true;
                 // printf("pkt In Process is %d\n", pktInProcess);
@@ -4019,6 +4022,15 @@ MemCtrl::recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked) {
     pktInProcess++;
     PacketPtr aux_pkt = new Packet(pkt);
     aux_pkt->new_subPktCnt = pkt_count;
+    aux_pkt->allocateForMC();
+    memcpy(aux_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+
+    if (pkt->isWrite()) {
+        if (std::find(inProcessWritePkt.begin(), inProcessWritePkt.end(), pkt) != inProcessWritePkt.end()) {
+            inProcessWritePkt.remove(pkt);
+        }
+        inProcessWritePkt.emplace_back(aux_pkt);
+    }
 
     if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
         printf("\n\n***********************************\n\n");
@@ -4026,9 +4038,7 @@ MemCtrl::recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked) {
             pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
         printf("%lx\n", aux_pkt);
         fflush(stdout);
-    }
-
-    memcpy(aux_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+    } 
 
     assert(burst_size == 64);
     for (int cnt = 0; cnt < pkt_count; cnt++) {
@@ -4456,8 +4466,10 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         PPN ppn = (pkt->getAddr() >> 12 & ((1ULL << 52) - 1));
         pkt->checkIfValid();
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
+
         std::vector<uint8_t> newMetaData = recompressTiming(pkt);
         assert(pkt->comprTick != 0);
+        
         PacketPtr writeForCompress = new Packet(pkt->comprBackup, pkt->comprTick);
         // printf("[1] create a writeForCompress 0x%lx due to the readForCompress 0x%lx\n", reinterpret_cast<unsigned long>(writeForCompress), reinterpret_cast<unsigned long>(pkt));
         // printf("(pkt) Line %d, the writeForCompress pkt %lx\n", __LINE__, writeForCompress);
@@ -4499,17 +4511,6 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
 
         // }
         // printf("\n");
-
-        bool merged = false;
-        if (backup_pkt->getPType() == 0x2) {
-            Addr backup_addr = backup_pkt->getAddr();
-            uint64_t backup_size = backup_pkt->getSize();
-            if (((backup_addr + backup_size) >> 12) == backup_addr >> 12) {
-                merged = true;
-            }
-            assert(typeOneBlock >= 1);
-            typeOneBlock--;
-        }
         mem_intr->accessForCompr(pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
 
         if (recordForCheckReady == false) {
@@ -4523,7 +4524,6 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
 
         // printf("check the backup packet type %d\n", static_cast<unsigned int>(backup_pkt->getPType()));
         if (backup_pkt->getPType() == 0x4) {
-            assert(merged == false);
             /* backup is readMetaData, the writeForCompress is triggered by replace the pageBuffer */
             assert(typeTwoBlock >= 1);
             typeTwoBlock--;
@@ -4539,8 +4539,17 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
                 auxPkt->comprIsReady = true;
                 assignToQueue(auxPkt);
             }
-        } else if (merged) {
+        } else {
+            assert(backup_pkt->getPType() == 0x2);
             assert(backup_pkt->comprBackup);
+
+            Addr backup_addr = backup_pkt->getAddr();
+            uint64_t backup_size = backup_pkt->getSize();
+
+            assert(backup_addr >= pkt->getAddr() && (backup_addr + backup_size <= pkt->getAddr() + 4096));
+            assert(typeOneBlock >= 1);
+            typeOneBlock--;
+
             PacketPtr real_recv_pkt = backup_pkt->comprBackup;
 
             DPRINTF(MemCtrl, "Responding to pkt 0x%lx\n", real_recv_pkt);
@@ -4571,7 +4580,8 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
             backup_pkt->allocateForMC();
             backup_pkt->setDataForMC(newData.data(), 0, new_size);
 
-            mem_intr->accessForCompr(backup_pkt, burst_size, pageNum, pageBuffer, mPageBuffer);
+            mem_intr->accessForCompr(backup_pkt, burst_size, pageNum, pageBuffer, mPageBuffer);   // Also this will not change anything, but we need this to update the architectural status
+
             if (recordForCheckReady == false) {
                 waitQueue.erase(backup_pkt);
                 checkForReadyPkt();
@@ -4621,6 +4631,7 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
         if (typeOneBlock + typeTwoBlock == 0) {
             // printf("set the blockedForCompr to false due to the pkt 0x%lx\n", reinterpret_cast<unsigned long>(pkt));
             blockedForCompr = false;
+            blockedNum = 0;
             // printf("=================status of waitqueue===============\n");
             // for (const auto& wait_pkt: waitQueue) {
             //     printf("if ready: %d, pkt type is %d, address is %lx\n", wait_pkt->comprIsReady, wait_pkt->getPType(), reinterpret_cast<uint64_t>(wait_pkt));
@@ -5278,9 +5289,11 @@ MemCtrl::accessAndRespondForNew(PacketPtr pkt, Tick static_latency,
         unsigned size = real_recv_pkt->getSize();
         unsigned offset = real_recv_pkt->getAddr() & (burst_size - 1);
         unsigned int pkt_count = divCeil(offset + size, burst_size);
-
+        
         if (pkt->isWrite()) {
             curWriteNum -= pkt_count;
+            assert(std::find(inProcessWritePkt.begin(), inProcessWritePkt.end(), pkt) != inProcessWritePkt.end());
+            inProcessWritePkt.remove(pkt);
         } else {
             assert(pkt->isRead());
             assert(real_recv_pkt->getSize() == pkt->getSize());
@@ -5845,7 +5858,7 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         printf("QoS Turnarounds selected state %s %s\n",
             (mem_intr->busState==MemCtrl::READ)?"READ":"WRITE",
             switched_cmd_type?"[turnaround triggered]":"");
-        printf("the current waitQueue size is %d\n", waitQueueForNew.size());
+        printf("the current waitQueue size is %d\n", waitQueue.size());
         // printf("the current pkt in blocked queue is %d\n", blockPktQueue.size());
         printf("the read size queue is %d\n", mem_intr->readQueueSize);
         printf("the write queue size is %d\n", mem_intr->writeQueueSize);
@@ -5854,11 +5867,11 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         fflush(stdout);
     }
 
-    if (curTick() - recvLastPkt >= 5091336250) {
+    if (curTick() - recvLastPkt >= 5000000000) {
         printf("QoS Turnarounds selected state %s %s\n",
             (mem_intr->busState==MemCtrl::READ)?"READ":"WRITE",
             switched_cmd_type?"[turnaround triggered]":"");
-        printf("the current waitQueue size is %d\n", waitQueueForNew.size());
+        printf("the current waitQueue size is %d\n", waitQueue.size());
         // printf("the current pkt in blocked queue is %d\n", blockPktQueue.size());
         printf("the read size queue is %d\n", mem_intr->readQueueSize);
         printf("the write queue size is %d\n", mem_intr->writeQueueSize);
@@ -5927,7 +5940,7 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
             }
             if (!(mem_intr->writeQueueSize == 0) &&
                 (drainState() == DrainState::Draining ||
-                 referSize > writeLowThreshold)) {
+                 referSize > writeLowThreshold || avoidDeadLockForCompr(mem_intr) )) {   
                 DPRINTF(MemCtrl,
                         "Switching to writes due to read queue empty\n");
                 switch_to_writes = true;
@@ -6554,6 +6567,9 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
 
         /* step 0: create an auxiliary packet for processing the pkt */
         PacketPtr auxPkt = new Packet(pkt);
+        // copy the content
+        auxPkt->allocateForMC();
+        memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
         unsigned size = pkt->getSize();
         uint32_t burst_size = mem_intr->bytesPerBurst();
@@ -7398,31 +7414,8 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
 bool
 MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool hasBlocked) {
-    if (!hasBlocked) {
-        DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
-            pkt->cmdString(), pkt->getAddr());
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)){
-            printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
-        }
-    }
-
-
-    if (blockedForNew) {
-        assert(!hasBlocked);
-        if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
-            waitQueueForNew.emplace_back(std::make_pair(pkt, 0));
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    // printf("\n\n========recv new pkt============\n\n");
-
-    if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
-        /* step 0: create an auxiliary packet for processing the pkt */
-        PacketPtr auxPkt = new Packet(pkt);
-
+    if (hasBlocked) {
+        assert(pkt->newPType == 0x100);
         unsigned size = pkt->getSize();
         uint32_t burst_size = mem_intr->bytesPerBurst();
 
@@ -7436,7 +7429,7 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
         for (unsigned int i = 0; i < pkt_count; i++) {
             PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
 
-            if (auxPkt->newfunctionMetaDataMap.find(ppn) == auxPkt->newfunctionMetaDataMap.end()) {
+            if (pkt->newfunctionMetaDataMap.find(ppn) == pkt->newfunctionMetaDataMap.end()) {
                 /* step 1.1: calculate the MPA for metadata */
                 Addr memory_addr = ppn * 64;
                 std::vector<uint8_t> metaData(64, 0);
@@ -7451,7 +7444,7 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
                     new_allocateBlock(metaData, 1);
                 }
                 
-                auxPkt->newfunctionMetaDataMap[ppn] = metaData;
+                pkt->newfunctionMetaDataMap[ppn] = metaData;
             }
             // Starting address of next memory pkt (aligned to burst boundary)
             addr = (addr | (burst_size - 1)) + 1;
@@ -7459,7 +7452,8 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
 
         /* step 2: process the pkt based on isWrite or isRead */
 
-        if (auxPkt->isWrite()) {
+        if (pkt->isWrite()) {
+
             Addr addrAligned = (base_addr >> 6) << 6;
             uint64_t new_size = ((((base_addr + size) + (burst_size - 1)) >> 6) << 6) - addrAligned;
 
@@ -7467,7 +7461,7 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
             assert(new_size == (addr - addrAligned));
             assert(new_size == pkt_count * burst_size);
 
-            if (auxPkt->cmd == MemCmd::SwapReq) {
+            if (pkt->cmd == MemCmd::SwapReq) {
                 panic("not support yet");
             } else {
                 addr = base_addr;
@@ -7479,8 +7473,8 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
 
                     uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
 
-                    assert(auxPkt->newfunctionMetaDataMap.find(ppn) != auxPkt->newfunctionMetaDataMap.end());
-                    std::vector<uint8_t> metaData = auxPkt->newfunctionMetaDataMap[ppn];
+                    assert(pkt->newfunctionMetaDataMap.find(ppn) != pkt->newfunctionMetaDataMap.end());
+                    std::vector<uint8_t> metaData = pkt->newfunctionMetaDataMap[ppn];
 
 
                     /* has to read the old cacheline (compressed form) from memory */
@@ -7526,12 +7520,12 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
                     uint8_t loc = addr & 0x3F;
                     size_t writeSize = std::min(64UL - loc, size - ofs);
                     // DPRINTF(MemCtrl, "(F) Line %d: start to write dat, the ofs is %lld, the loc is %d, the writeSize is %ld\n", __LINE__, ofs, static_cast<unsigned int>(loc), writeSize);
-                    auxPkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
+                    pkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
 
                     /* update the metadata according to the new value of cacheline */
                     new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
 
-                    auxPkt->newfunctionMetaDataMap[ppn] = metaData;
+                    pkt->newfunctionMetaDataMap[ppn] = metaData;
                     Addr metadata_addr = ppn * 64;
                     mcache.add(metadata_addr, metaData);
 
@@ -7546,33 +7540,439 @@ MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool h
 
 
                 assert(new_size % 64 == 0);
-                auxPkt->setAddr(addrAligned);
-                auxPkt->setSizeForMC(new_size);
-                auxPkt->allocateForMC();
-                auxPkt->setDataForMC(newData.data(), 0, new_size);
-
-                if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-                    // printf("[Functional Write] the update data in auxPkt is:");
-                    // for (int i = 0; i < new_size; i++) {
-                    //     if (i % 8 == 0) {
-                    //         printf("\n");
-                    //     }
-                    //     printf("%02x ", static_cast<unsigned int>(*(auxPkt->getPtr<uint8_t>() + i)));
-                    // }
-                    // printf("\n");
-                }
+                pkt->setAddr(addrAligned);
+                pkt->setSizeForMC(new_size);
+                pkt->allocateForMC();
+                pkt->setDataForMC(newData.data(), 0, new_size);
+                mem_intr->functionalAccessForNew(pkt, burst_size, zeroAddr, 2);   
             }
+            assert(std::find(inProcessWritePkt.begin(), inProcessWritePkt.end(), pkt) != inProcessWritePkt.end());
+            inProcessWritePkt.remove(pkt);
 
         } else {
-            /* step 2.2: if the pkt is read, access the auxPkt directly */
-            assert(auxPkt->isRead());
+            /* do nothing */
+        }
+        delete pkt;
+    } else {
+        DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
+            pkt->cmdString(), pkt->getAddr());
+        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)){
+            printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
         }
 
-        mem_intr->functionalAccessForNew(auxPkt, burst_size, zeroAddr);
-        return true;
-    } else {
-        return false;
+        if (blockedForNew) {
+            PacketPtr auxPkt = new Packet(pkt);
+            // copy the content
+            auxPkt->newPType = 0x100;
+            auxPkt->allocateForMC();
+            memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+            assert(!hasBlocked);
+            if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
+                waitQueueForNew.emplace_back(std::make_pair(auxPkt, 0));
+                unsigned size = pkt->getSize();
+                uint32_t burst_size = mem_intr->bytesPerBurst();
+
+                unsigned offset = pkt->getAddr() & (burst_size - 1);
+                unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+                /* Step 1: atomic read metadata from memory or mcache */
+                Addr base_addr = pkt->getAddr();
+                Addr addr = base_addr;
+                
+                if (pkt->isRead()) {
+
+                    for (unsigned int i = 0; i < pkt_count; i++) {
+                        PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
+
+                        if (pkt->newfunctionMetaDataMap.find(ppn) == pkt->newfunctionMetaDataMap.end()) {
+                            /* step 1.1: calculate the MPA for metadata */
+                            Addr memory_addr = ppn * 64;
+                            std::vector<uint8_t> metaData(64, 0);
+                            if (mcache.isExist(memory_addr)) {
+                                metaData = mcache.find(memory_addr);
+                            } else {
+                                mem_intr->atomicRead(metaData.data(), memory_addr, 64);
+                            }
+
+                            if (!isValidMetaData(metaData)) {
+                                metaData = originMetaData;
+                                new_allocateBlock(metaData, 1);
+                            }
+                            
+                            pkt->newfunctionMetaDataMap[ppn] = metaData;
+                        }
+                        // Starting address of next memory pkt (aligned to burst boundary)
+                        addr = (addr | (burst_size - 1)) + 1;
+                    }
+
+                    /* step 2: process the pkt  */
+                    /* step 2.2: if the pkt is read, access the auxPkt directly */
+                    mem_intr->functionalAccessForNew(pkt, burst_size, zeroAddr, 1);
+
+                    /* check for if collision with current write */
+                    for (const auto& writePkt: inProcessWritePkt) {
+                        Addr writePktStart = writePkt->getAddr();
+                        Addr writePktEnd = writePktStart + writePkt->getSize();
+                        Addr pktStart = pkt->getAddr();
+                        Addr pktEnd = pktStart + pkt->getSize();
+                        if ((writePktStart < pktEnd) && (pktStart < writePktEnd)) {
+                            printf("Func. read collide with write\n");
+                            Addr overlap_start = std::max(writePktStart, pktStart);
+                            Addr overlap_end = std::min(writePktEnd, pktEnd);
+                            size_t overlap_len = overlap_end - overlap_start;
+                            size_t pkt_offset = overlap_start - pktStart;
+                            size_t write_pkt_offset = overlap_start - writePktStart;
+                            std::memcpy(
+                                pkt->getPtr<uint8_t>() + pkt_offset,
+                                writePkt->getPtr<uint8_t>() + write_pkt_offset,
+                                overlap_len
+                            );
+                        }
+                    }
+                } else {
+                    assert(pkt->isWrite());
+                    inProcessWritePkt.emplace_back(auxPkt);
+                    mem_intr->functionalAccessForNew(pkt, burst_size, zeroAddr, 1);
+                }
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
+                /* Step 0: create an auxPkt for write */
+                PacketPtr aux_pkt = new Packet(pkt);
+                aux_pkt->allocateForMC();
+                memcpy(aux_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+
+                unsigned size = aux_pkt->getSize();
+                uint32_t burst_size = mem_intr->bytesPerBurst();
+
+                unsigned offset = aux_pkt->getAddr() & (burst_size - 1);
+                unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+                /* Step 1: atomic read metadata from memory or mcache */
+                Addr base_addr = aux_pkt->getAddr();
+                Addr addr = base_addr;
+
+                for (unsigned int i = 0; i < pkt_count; i++) {
+                    PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
+
+                    if (aux_pkt->newfunctionMetaDataMap.find(ppn) == aux_pkt->newfunctionMetaDataMap.end()) {
+                        /* step 1.1: calculate the MPA for metadata */
+                        Addr memory_addr = ppn * 64;
+                        std::vector<uint8_t> metaData(64, 0);
+                        if (mcache.isExist(memory_addr)) {
+                            metaData = mcache.find(memory_addr);
+                        } else {
+                            mem_intr->atomicRead(metaData.data(), memory_addr, 64);
+                        }
+
+                        if (!isValidMetaData(metaData)) {
+                            metaData = originMetaData;
+                            new_allocateBlock(metaData, 1);
+                        }
+                        
+                        aux_pkt->newfunctionMetaDataMap[ppn] = metaData;
+                    }
+                    // Starting address of next memory pkt (aligned to burst boundary)
+                    addr = (addr | (burst_size - 1)) + 1;
+                }
+
+                /* step 2: process the pkt based on isWrite or isRead */
+
+                if (pkt->isWrite()) {
+
+                    Addr addrAligned = (base_addr >> 6) << 6;
+                    uint64_t new_size = ((((base_addr + size) + (burst_size - 1)) >> 6) << 6) - addrAligned;
+
+                    assert(burst_size == 64);
+                    assert(new_size == (addr - addrAligned));
+                    assert(new_size == pkt_count * burst_size);
+
+                    if (pkt->cmd == MemCmd::SwapReq) {
+                        panic("not support yet");
+                    } else {
+                        addr = base_addr;
+                        std::vector<uint8_t> newData(new_size, 0);
+
+                        /* process the pkt one by one */
+                        for (unsigned int i = 0; i < pkt_count; i++) {
+                            PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
+
+                            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+
+                            assert(aux_pkt->newfunctionMetaDataMap.find(ppn) != aux_pkt->newfunctionMetaDataMap.end());
+                            std::vector<uint8_t> metaData = aux_pkt->newfunctionMetaDataMap[ppn];
+
+
+                            /* has to read the old cacheline (compressed form) from memory */
+                            std::vector<uint8_t> cacheLine(64, 0);
+
+                            uint8_t type = new_getType(metaData, cacheLineIdx);
+
+                            // printf("the type is %d\n", static_cast<unsigned int>(type));
+
+                            std::vector<uint64_t> translationRes(3, 0);
+
+                            translationRes[0] = zeroAddr;
+
+
+                            if(new_getCoverage(metaData) <= cacheLineIdx) {
+                                assert(type == 0);
+                            } else {
+                                translationRes = new_addressTranslation(metaData, cacheLineIdx);
+                            }
+
+                            if (type >= 0b100) {
+                                mem_intr->atomicRead(cacheLine.data(), translationRes[0], 1);
+                                uint8_t overflowIdx = cacheLine[0];
+                                Addr overflow_addr = calOverflowAddr(metaData, overflowIdx);
+                                mem_intr->atomicRead(cacheLine.data(), overflow_addr, 64);
+                            } else {
+                                assert(translationRes[2] < sizeMap[type]);
+                                if (translationRes[2] == 0) {
+                                    mem_intr->atomicRead(cacheLine.data(), translationRes[0], sizeMap[type]);  
+                                } else {
+                                    uint64_t prefixLen = sizeMap[type] - translationRes[2];
+                                    mem_intr->atomicRead(cacheLine.data(), translationRes[0], prefixLen);
+                                    mem_intr->atomicRead(cacheLine.data() + prefixLen, translationRes[1], translationRes[2]);
+                                }
+                                
+                            }
+
+                            /* restore the data to its uncompressed form */
+                            new_restoreData(cacheLine, type);
+
+                            /* write the data */
+                            uint64_t ofs = addr - base_addr;
+                            uint8_t loc = addr & 0x3F;
+                            size_t writeSize = std::min(64UL - loc, size - ofs);
+                            // DPRINTF(MemCtrl, "(F) Line %d: start to write dat, the ofs is %lld, the loc is %d, the writeSize is %ld\n", __LINE__, ofs, static_cast<unsigned int>(loc), writeSize);
+                            aux_pkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
+
+                            /* update the metadata according to the new value of cacheline */
+                            new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
+
+                            aux_pkt->newfunctionMetaDataMap[ppn] = metaData;
+                            Addr metadata_addr = ppn * 64;
+                            mcache.add(metadata_addr, metaData);
+
+                            mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
+
+                            for (unsigned int j = 0; j < 64; j++) {
+                                newData[i * 64 + j] = cacheLine[j];
+                            }
+                            // Starting address of next memory pkt (aligned to burst boundary)
+                            addr = (addr | (burst_size - 1)) + 1;
+                        }
+
+
+                        assert(new_size % 64 == 0);
+                        aux_pkt->setAddr(addrAligned);
+                        aux_pkt->setSizeForMC(new_size);
+                        aux_pkt->allocateForMC();
+                        aux_pkt->setDataForMC(newData.data(), 0, new_size);
+                    }
+
+                    mem_intr->functionalAccessForNew(aux_pkt, burst_size, zeroAddr, 0);
+                    delete aux_pkt;
+
+                } else {
+                    /* step 2.2: if the pkt is read, access the auxPkt directly */
+                    assert(pkt->isRead());
+                    mem_intr->functionalAccessForNew(aux_pkt, burst_size, zeroAddr, 0);
+                    assert(aux_pkt->getSize() == pkt->getSize());
+                    memcpy(pkt->getPtr<uint8_t>(), aux_pkt->getPtr<uint8_t>(), pkt->getSize());
+                    delete aux_pkt;
+                }
+                return true;
+            } else {
+                return false;
+            }
+        }
     }
+
+    // PacketPtr auxPkt = pkt;
+    
+    // if (!hasBlocked) {
+    //     DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
+    //         pkt->cmdString(), pkt->getAddr());
+    //     if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)){
+    //         printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
+    //     }
+    //     auxPkt = new Packet(pkt);
+    //     // copy the content
+    //     auxPkt->allocateForMC();
+    //     memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+    // }
+
+    // if (blockedForNew) {
+    //     assert(!hasBlocked);
+    //     if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
+    //         waitQueueForNew.emplace_back(std::make_pair(auxPkt, 0));
+    //         return true;
+    //     } else {
+    //         return false;
+    //     }
+    // }
+
+    // // printf("\n\n========recv new pkt============\n\n");
+
+    // if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
+    //     /* step 0: create an auxiliary packet for processing the pkt */
+    //     unsigned size = pkt->getSize();
+    //     uint32_t burst_size = mem_intr->bytesPerBurst();
+
+    //     unsigned offset = pkt->getAddr() & (burst_size - 1);
+    //     unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    //     /* Step 1: atomic read metadata from memory or mcache */
+    //     Addr base_addr = pkt->getAddr();
+    //     Addr addr = base_addr;
+
+    //     for (unsigned int i = 0; i < pkt_count; i++) {
+    //         PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
+
+    //         if (auxPkt->newfunctionMetaDataMap.find(ppn) == auxPkt->newfunctionMetaDataMap.end()) {
+    //             /* step 1.1: calculate the MPA for metadata */
+    //             Addr memory_addr = ppn * 64;
+    //             std::vector<uint8_t> metaData(64, 0);
+    //             if (mcache.isExist(memory_addr)) {
+    //                 metaData = mcache.find(memory_addr);
+    //             } else {
+    //                 mem_intr->atomicRead(metaData.data(), memory_addr, 64);
+    //             }
+
+    //             if (!isValidMetaData(metaData)) {
+    //                 metaData = originMetaData;
+    //                 new_allocateBlock(metaData, 1);
+    //             }
+                
+    //             auxPkt->newfunctionMetaDataMap[ppn] = metaData;
+    //         }
+    //         // Starting address of next memory pkt (aligned to burst boundary)
+    //         addr = (addr | (burst_size - 1)) + 1;
+    //     }
+
+    //     /* step 2: process the pkt based on isWrite or isRead */
+
+    //     if (auxPkt->isWrite()) {
+    //         Addr addrAligned = (base_addr >> 6) << 6;
+    //         uint64_t new_size = ((((base_addr + size) + (burst_size - 1)) >> 6) << 6) - addrAligned;
+
+    //         assert(burst_size == 64);
+    //         assert(new_size == (addr - addrAligned));
+    //         assert(new_size == pkt_count * burst_size);
+
+    //         if (auxPkt->cmd == MemCmd::SwapReq) {
+    //             panic("not support yet");
+    //         } else {
+    //             addr = base_addr;
+    //             std::vector<uint8_t> newData(new_size, 0);
+
+    //             /* process the pkt one by one */
+    //             for (unsigned int i = 0; i < pkt_count; i++) {
+    //                 PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
+
+    //                 uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
+
+    //                 assert(auxPkt->newfunctionMetaDataMap.find(ppn) != auxPkt->newfunctionMetaDataMap.end());
+    //                 std::vector<uint8_t> metaData = auxPkt->newfunctionMetaDataMap[ppn];
+
+
+    //                 /* has to read the old cacheline (compressed form) from memory */
+    //                 std::vector<uint8_t> cacheLine(64, 0);
+
+    //                 uint8_t type = new_getType(metaData, cacheLineIdx);
+
+    //                 // printf("the type is %d\n", static_cast<unsigned int>(type));
+
+    //                 std::vector<uint64_t> translationRes(3, 0);
+
+    //                 translationRes[0] = zeroAddr;
+
+
+    //                 if(new_getCoverage(metaData) <= cacheLineIdx) {
+    //                     assert(type == 0);
+    //                 } else {
+    //                     translationRes = new_addressTranslation(metaData, cacheLineIdx);
+    //                 }
+
+    //                 if (type >= 0b100) {
+    //                     mem_intr->atomicRead(cacheLine.data(), translationRes[0], 1);
+    //                     uint8_t overflowIdx = cacheLine[0];
+    //                     Addr overflow_addr = calOverflowAddr(metaData, overflowIdx);
+    //                     mem_intr->atomicRead(cacheLine.data(), overflow_addr, 64);
+    //                 } else {
+    //                     assert(translationRes[2] < sizeMap[type]);
+    //                     if (translationRes[2] == 0) {
+    //                         mem_intr->atomicRead(cacheLine.data(), translationRes[0], sizeMap[type]);  
+    //                     } else {
+    //                         uint64_t prefixLen = sizeMap[type] - translationRes[2];
+    //                         mem_intr->atomicRead(cacheLine.data(), translationRes[0], prefixLen);
+    //                         mem_intr->atomicRead(cacheLine.data() + prefixLen, translationRes[1], translationRes[2]);
+    //                     }
+                        
+    //                 }
+
+    //                 /* restore the data to its uncompressed form */
+    //                 new_restoreData(cacheLine, type);
+
+    //                 /* write the data */
+    //                 uint64_t ofs = addr - base_addr;
+    //                 uint8_t loc = addr & 0x3F;
+    //                 size_t writeSize = std::min(64UL - loc, size - ofs);
+    //                 // DPRINTF(MemCtrl, "(F) Line %d: start to write dat, the ofs is %lld, the loc is %d, the writeSize is %ld\n", __LINE__, ofs, static_cast<unsigned int>(loc), writeSize);
+    //                 auxPkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
+
+    //                 /* update the metadata according to the new value of cacheline */
+    //                 new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
+
+    //                 auxPkt->newfunctionMetaDataMap[ppn] = metaData;
+    //                 Addr metadata_addr = ppn * 64;
+    //                 mcache.add(metadata_addr, metaData);
+
+    //                 mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
+
+    //                 for (unsigned int j = 0; j < 64; j++) {
+    //                     newData[i * 64 + j] = cacheLine[j];
+    //                 }
+    //                 // Starting address of next memory pkt (aligned to burst boundary)
+    //                 addr = (addr | (burst_size - 1)) + 1;
+    //             }
+
+
+    //             assert(new_size % 64 == 0);
+    //             auxPkt->setAddr(addrAligned);
+    //             auxPkt->setSizeForMC(new_size);
+    //             auxPkt->allocateForMC();
+    //             auxPkt->setDataForMC(newData.data(), 0, new_size);
+
+    //             // if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
+    //                 // printf("[Functional Write] the update data in auxPkt is:");
+    //                 // for (int i = 0; i < new_size; i++) {
+    //                 //     if (i % 8 == 0) {
+    //                 //         printf("\n");
+    //                 //     }
+    //                 //     printf("%02x ", static_cast<unsigned int>(*(auxPkt->getPtr<uint8_t>() + i)));
+    //                 // }
+    //                 // printf("\n");
+    //             // }
+    //         }
+
+    //     } else {
+    //         /* step 2.2: if the pkt is read, access the auxPkt directly */
+    //         assert(auxPkt->isRead());
+    //     }
+
+    //     mem_intr->functionalAccessForNew(auxPkt, burst_size, zeroAddr);
+    //     delete auxPkt;
+    //     return true;
+    // } else {
+    //     delete auxPkt;
+    //     return false;
+    // }
 }
 
 Port &
@@ -8265,40 +8665,43 @@ MemCtrl::recompressTiming(PacketPtr writeForCompress) {
     metaData[0] = (0b1 << 7);
 
     PacketPtr backup_pkt = writeForCompress->comprBackup;
-    if (backup_pkt->getPType() == 0x2) {
-        Addr backup_addr = backup_pkt->getAddr();
-        uint64_t backup_size = backup_pkt->getSize();
-        Addr writeFrom = std::max(backup_addr, writeForCompress->getAddr());
-        uint64_t writeSize = backup_size + backup_addr - writeFrom;
-        assert(writeSize <= backup_size);
-        uint8_t* copy_from = backup_pkt->getPtr<uint8_t>() + writeFrom - backup_addr;
+    assert(backup_pkt->getPType() == 0x2);
 
-        uint8_t* mytest_Start = writeForCompress->getPtr<uint8_t>();
+    Addr backup_addr = backup_pkt->getAddr();
+    uint64_t backup_size = backup_pkt->getSize();
+    
+    assert(backup_addr >= writeForCompress->getAddr() && (backup_addr + backup_size <= writeForCompress->getAddr() + 4096));
 
-        // printf("backup_addr is %lx\n", backup_addr);
-        Addr backup_addr_aligned = (backup_addr >> 6) << 6;
-        uint32_t ofs_My_test = backup_addr_aligned - writeForCompress->getAddr();
-        // printf("before write: \n");
-        // for (int qw = 0; qw < 64; qw++) {
-        //     if (qw % 8 == 0) {
-        //         printf("\n");
-        //     }
-        //     printf("%02x, ", static_cast<unsigned int>(mytest_Start[qw + ofs_My_test]));
-        // }
-        // printf("\n");
+    Addr writeFrom = std::max(backup_addr, writeForCompress->getAddr());
+    uint64_t writeSize = backup_size + backup_addr - writeFrom;
+    assert(writeSize <= backup_size);
+    uint8_t* copy_from = backup_pkt->getPtr<uint8_t>() + writeFrom - backup_addr;
 
-        writeForCompress->setDataForMC(copy_from, writeFrom - writeForCompress->getAddr(), writeSize);
+    // uint8_t* mytest_Start = writeForCompress->getPtr<uint8_t>();
 
-        // printf("after write: \n");
-        // for (int qw = 0; qw < 64; qw++) {
-        //     if (qw % 8 == 0) {
-        //         printf("\n");
-        //     }
-        //     printf("%02x, ", static_cast<unsigned int>(mytest_Start[qw + ofs_My_test]));
+    // printf("backup_addr is %lx\n", backup_addr);
+    // Addr backup_addr_aligned = (backup_addr >> 6) << 6;
+    // uint32_t ofs_My_test = backup_addr_aligned - writeForCompress->getAddr();
+    // printf("before write: \n");
+    // for (int qw = 0; qw < 64; qw++) {
+    //     if (qw % 8 == 0) {
+    //         printf("\n");
+    //     }
+    //     printf("%02x, ", static_cast<unsigned int>(mytest_Start[qw + ofs_My_test]));
+    // }
+    // printf("\n");
 
-        // }
-        // printf("\n");
-    }
+    writeForCompress->setDataForMC(copy_from, writeFrom - writeForCompress->getAddr(), writeSize);
+
+    // printf("after write: \n");
+    // for (int qw = 0; qw < 64; qw++) {
+    //     if (qw % 8 == 0) {
+    //         printf("\n");
+    //     }
+    //     printf("%02x, ", static_cast<unsigned int>(mytest_Start[qw + ofs_My_test]));
+
+    // }
+    // printf("\n");
 
     uint8_t* page = writeForCompress->getPtr<uint8_t>();
     uint64_t size = 0;
@@ -8937,7 +9340,7 @@ MemCtrl::checkForReadyPkt(){
     recordForCheckReady = true;
     for (const auto& wait_pkt: waitQueue) {
         if (wait_pkt->comprIsProc == false && wait_pkt->comprIsReady) {
-            assignToQueue(wait_pkt);
+            assignToQueue(wait_pkt);     // during this calling, wait_pkt might be finished and new pkt might need to be added
         }
     }
 
@@ -8961,9 +9364,9 @@ MemCtrl::checkForReadyPkt(){
 
 void
 MemCtrl::prepareMetaData(PacketPtr pkt){
-    if (!isEligible(pkt)) {
-        return;
-    }
+    // if (!isEligible(pkt)) {
+    //     return;
+    // }
     unsigned size = pkt->getSize();
     uint32_t burst_size = dram->bytesPerBurst();
 
@@ -9853,6 +10256,24 @@ MemCtrl::readForRecompress(PacketPtr pkt, MemInterface* mem_intr) {
     }
 }
 
+bool
+MemCtrl::avoidDeadLockForCompr(MemInterface* mem_intr) {
+    assert(mem_intr->readQueueSize == 0);
+    assert(mem_intr->writeQueueSize != 0);
+
+    bool res = true;
+
+    for (const auto &pkt: waitQueue) {
+        if (pkt->isRead()) {
+            if (isEligible(pkt)) {
+                res = false;
+                break;
+            }
+        }
+    }
+    return res;
+}
+
 
 void
 MemCtrl::recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData) {
@@ -9962,9 +10383,9 @@ MemCtrl::recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData) {
     }
     assert(chunk_num <= metaData[1]);
 
-    if (chunk_num < metaData[1]) {
-        printf("saved %d blocks \n", metaData[1] - chunk_num);
-    }
+    // if (chunk_num < metaData[1]) {
+        // printf("saved %d blocks \n", metaData[1] - chunk_num);
+    // }
     /* give back the old blocks */
     for (int cn = 0; cn < metaData[1]; cn++) {
         Addr old_addr = 0;

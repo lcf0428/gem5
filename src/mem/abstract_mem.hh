@@ -388,7 +388,7 @@ class AbstractMemory : public ClockedObject
      * perform a functional access specially for the new architecture
      */
 
-    void functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr);
+    void functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr, int mode);
 
 
     /* ====== special function for compresso ====== */
@@ -415,6 +415,8 @@ class AbstractMemory : public ClockedObject
     std::vector<uint16_t> decompressC(const std::vector<uint8_t>& compresseData);
 
     std::pair<bool, Addr> addressTranslation(const std::vector<uint8_t>& metaData, uint8_t index);
+
+    Addr secondAddressTranslation(const std::vector<uint8_t>& metaData, uint8_t index);
 
     void restoreData(std::vector<uint8_t>& cacheLine, uint8_t type);
 

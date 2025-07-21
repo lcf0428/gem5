@@ -1229,6 +1229,8 @@ class MemCtrl : public qos::MemCtrl
     void prepareMetaData(PacketPtr pkt);
 
     void assignToQueue(PacketPtr pkt, bool recordStats = false);
+
+    bool avoidDeadLockForCompr(MemInterface* mem_intr);
     /* ====== end for compresso ====== */
 
     /* ====== start functionality for DyLeCT ===== */
