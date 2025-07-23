@@ -14,6 +14,7 @@ parser.add_argument("--cmd_args", type=str, default="",
                     help="Arguments to pass to the binary")
 parser.add_argument("--input", type=str, default=None,
                     help="Path to input file for stdin")
+parser.add_argument("--maxinsts", type=int, default=0, help="maximum number of instruction")
 options = parser.parse_args()
 
 system = System()
@@ -21,7 +22,7 @@ system.clk_domain = SrcClockDomain()
 system.clk_domain.clock = "3GHz"
 system.clk_domain.voltage_domain = VoltageDomain()
 system.mem_mode = "timing"
-system.mem_ranges = [AddrRange("512MiB")]
+system.mem_ranges = [AddrRange("20GiB")]
 
 # Use O3 CPU
 system.cpu = DerivO3CPU()
@@ -74,8 +75,17 @@ if options.input:
 system.cpu.workload = process
 system.cpu.createThreads()
 
+if options.maxinsts > 0:
+    system.cpu.max_insts_any_thread = options.maxinsts
+
 root = Root(full_system=False, system=system)
 m5.instantiate()
 print("Starting Simulation...")
+# m5.stats.reset()
+# exit_event = m5.simulate(options.maxinsts if options.maxinsts > 0 else m5.MAX_INSTS)
 exit_event = m5.simulate()
 print(f"Exiting @ {m5.curTick()} because {exit_event.getCause()}")
+
+
+# /local/home/liuche/checkpoint/gem5/build/X86/gem5.opt /local/home/liuche/checkpoint/gem5/configs/learning_gem5/part4/timing_config2.py --binary=/local/home/liuche/SPEC/benchspec/CPU/620.omnetpp_s/run/run_base_refspeed_mytest-m64.0000/omnetpp_s_base.mytest-m64 --maxinsts 1000000000 --mem_operation_mode=DyLeCT --cmd_args "-c General -r 0" > /local/home/liuche/checkpoint/res/test.out 2>
+# &1 &

@@ -355,7 +355,7 @@ class AbstractMemory : public ClockedObject
     /*
      * perform an untimed memory access specially for compresso
      */
-    void accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer);
+    void accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, const Addr &pageBufferAddr);
 
     /*
      * perform an untimed memory access specially for the new architecture 
@@ -382,7 +382,7 @@ class AbstractMemory : public ClockedObject
      * perform a functional access specially for compresso
      */
 
-    void comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, std::vector<uint8_t>& pageBuffer, std::vector<uint8_t>& mPageBuffer);
+    void comprFunctionalAccess(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, const Addr &pageBufferAddr);
 
     /*
      * perform a functional access specially for the new architecture

@@ -547,6 +547,9 @@ class Packet : public Printable, public Extensible<Packet>
      */
     SenderState *senderState;
 
+    /* used by all implementations */
+    uint64_t ref_cnt;
+
     /* ===== special for compresso ===== */
     enum : PacketType
     {
@@ -982,6 +985,7 @@ class Packet : public Printable, public Extensible<Packet>
            htmTransactionUid(0),
            headerDelay(0), snoopDelay(0),
            payloadDelay(0), senderState(NULL),
+           ref_cnt(1),
            comprBackup(nullptr), comprPType(origin),
            comprIsReady(false),
            comprIsProc(false),
@@ -1038,6 +1042,7 @@ class Packet : public Printable, public Extensible<Packet>
            htmTransactionUid(0),
            headerDelay(0),
            snoopDelay(0), payloadDelay(0), senderState(NULL),
+           ref_cnt(1),
            comprBackup(nullptr), comprPType(origin),
            comprIsReady(false),
            comprIsProc(false),
@@ -1084,6 +1089,7 @@ class Packet : public Printable, public Extensible<Packet>
            snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
            senderState(pkt->senderState),
+           ref_cnt(1),
            comprBackup(nullptr), comprPType(origin),
            comprIsReady(false),
            comprIsProc(false),
@@ -1148,6 +1154,7 @@ class Packet : public Printable, public Extensible<Packet>
         snoopDelay(0),
         payloadDelay(pkt->payloadDelay),
         senderState(pkt->senderState),
+        ref_cnt(1),
         comprBackup(pkt),
         comprEntryCnt(entryCnt),
         comprPType(auxiliary),

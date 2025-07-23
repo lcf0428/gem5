@@ -3,6 +3,7 @@ from pathlib import Path
 
 from gem5.components.boards.simple_board import SimpleBoard
 from gem5.components.cachehierarchies.classic.no_cache import NoCache
+from gem5.components.memory import SingleChannelDDR4_2400
 from gem5.components.memory.single_channel import SingleChannelDDR3_1600
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_processor import SimpleProcessor
@@ -35,7 +36,8 @@ parser.add_argument("--weight_file", type=str, required=True,
 parser.add_argument("--warmup_interval", type=int, required=True, help="Warmup instruction count.")
 parser.add_argument("--stdin_file", type=str, help="File to feed to the program's standard input")
 parser.add_argument("--env", type=str, help="env file with enviormant variables")
-
+parser.add_argument("--mem_operation_mode", type=str, default="normal",
+                    help="Memory controller mode: normal, compresso, DyLeCT, new")
 
 args = parser.parse_args()
 
@@ -91,7 +93,10 @@ assert len(simpoints_list) == len(weights), "Simpoints and weights must have the
 assert abs(sum(weights) - 1.0) < 1e-3, "Weights must sum to 1.0."
 
 cache_hierarchy = NoCache()
-memory = SingleChannelDDR3_1600(size="20GiB")
+memory = SingleChannelDDR4_2400(size="20GiB")
+for ctrl in memory.mem_ctrl:
+    ctrl.dram.enable_dram_powerdown = True
+    ctrl.operation_mode = args.mem_operation_mode
 
 processor = SimpleProcessor(
     cpu_type=CPUTypes.ATOMIC,

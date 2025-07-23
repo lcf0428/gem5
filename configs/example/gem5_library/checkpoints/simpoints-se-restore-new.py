@@ -65,6 +65,7 @@ from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_h
     PrivateL1PrivateL2WalkCacheHierarchy,
 )
 from gem5.components.memory import DualChannelDDR4_2400
+from gem5.components.memory import SingleChannelDDR4_2400
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_processor import SimpleProcessor
 from gem5.isas import ISA
@@ -81,7 +82,7 @@ from gem5.utils.requires import requires
 requires(isa_required=ISA.X86)
 
 parser = argparse.ArgumentParser(
-    description="restore SimPoint-based checkpoint"
+    description="OoO core with DRAM energy stats and full cache hierarchy"
 )
 
 parser.add_argument("--cmd", type=str, required=True, help="Path to binary.")
@@ -103,6 +104,9 @@ parser.add_argument("--stdin_file", type=str, help="File to feed to the program'
 parser.add_argument("--env", type=str, help="env file with enviormant variables")
 
 parser.add_argument("--checkpoint", type=str, required=True, help="the target checkpoint file that wish to be restored")
+
+parser.add_argument("--mem_operation_mode", type=str, default="normal",
+                    help="Memory controller mode: normal, compresso, DyLeCT, new")
 
 args = parser.parse_args()
 
@@ -153,9 +157,12 @@ cache_hierarchy = PrivateL1PrivateL2WalkCacheHierarchy(
     l2_size="256KiB",
 )
 
-# The memory structure can be different from the memory structure used in
+# The memory structure can be different from the memory stqructure used in
 # taking the checkpoints, but the size of the memory must be maintained
-memory = DualChannelDDR4_2400(size="20GiB")
+memory = SingleChannelDDR4_2400(size="20GiB")
+for ctrl in memory.mem_ctrl:
+    ctrl.dram.enable_dram_powerdown = True
+    ctrl.operation_mode = args.mem_operation_mode
 
 processor = SimpleProcessor(
     # cpu_type=CPUTypes.TIMING,

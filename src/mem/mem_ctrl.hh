@@ -560,6 +560,10 @@ class MemCtrl : public qos::MemCtrl
     */
     uint64_t realStartAddr;
 
+    uint64_t pageBufferAddr;
+
+    uint64_t pageNumAddr;
+
     struct ListNode {
       ListNode(ListNode* p, ListNode* s): prev(p), succ(s), addr(0), cacheLine(std::vector<uint8_t>(64)) {}
       ListNode (ListNode* p, ListNode* s, Addr addr, const std::vector<uint8_t>& val): prev(p), succ(s), addr(addr), cacheLine(std::vector<uint8_t>(64)) {
@@ -683,9 +687,9 @@ class MemCtrl : public qos::MemCtrl
           target->prev->succ = tailer;
           tailer->prev = target->prev;
           Addr addr = target->addr;
-          if (addr == 0x8cc0) {
-            printf("erase from cache\n");
-          }
+          // if (addr == 0x8cc0) {
+          //   printf("erase from cache\n");
+          // }
           hmap.erase(addr);
           delete target;
           _sz--;
@@ -712,9 +716,9 @@ class MemCtrl : public qos::MemCtrl
 
     PPN pageNum;
 
-    std::vector<uint8_t> mPageBuffer;
+    // std::vector<uint8_t> mPageBuffer;
 
-    std::vector<uint8_t> pageBuffer;
+    // std::vector<uint8_t> pageBuffer;
 
     std::vector<PacketPtr> readCandiQueue;
 
@@ -1154,8 +1158,13 @@ class MemCtrl : public qos::MemCtrl
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
+    Tick recvAtomicLogicForNew(PacketPtr pkt, MemInterface* mem_intr);
 
     /* ====== useful functions for compresso implementation =====*/
+
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
+
     uint8_t getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
 
     void setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type);
