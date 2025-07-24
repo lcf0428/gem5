@@ -26,6 +26,7 @@ system.mem_ranges = [AddrRange("20GiB")]
 
 # Use O3 CPU
 system.cpu = DerivO3CPU()
+# system.cpu = X86TimingSimpleCPU()
 
 # Create memory bus
 system.membus = SystemXBar()
@@ -89,3 +90,13 @@ print(f"Exiting @ {m5.curTick()} because {exit_event.getCause()}")
 
 # /local/home/liuche/checkpoint/gem5/build/X86/gem5.opt /local/home/liuche/checkpoint/gem5/configs/learning_gem5/part4/timing_config2.py --binary=/local/home/liuche/SPEC/benchspec/CPU/620.omnetpp_s/run/run_base_refspeed_mytest-m64.0000/omnetpp_s_base.mytest-m64 --maxinsts 1000000000 --mem_operation_mode=DyLeCT --cmd_args "-c General -r 0" > /local/home/liuche/checkpoint/res/test.out 2>
 # &1 &
+
+
+# /local/home/liuche/checkpoint/gem5/build/X86/gem5.opt /local/home/liuche/checkpoint/gem5/configs/learning_gem5/part4/timing_config2.py \
+# --binary=/local/home/liuche/SPEC/benchspec/CPU/644.nab_s/run/run_base_refspeed_mytest-m64.0000/nab_s_base.mytest-m64 --maxinsts 1000000000 --mem_operation_mode=compresso \
+# --cmd_args " 3j1n 20140317 220" > /local/home/liuche/checkpoint/res/debug/test.out 2>&1 &
+
+
+# nohup /local/home/liuche/checkpoint/gem5/build/X86/gem5.opt -d /local/home/liuche/checkpoint/SPEC/fotonik3d/normal /local/home/liuche/checkpoint/gem5/configs/learning_gem5/part4/timing_config2.py \
+# --binary=/local/home/liuche/SPEC/benchspec/CPU/649.fotonik3d_s/run/run_base_refspeed_mytest-m64.0000/fotonik3d_s_base.mytest-m64 --maxinsts 1000000000 --mem_operation_mode=normal \
+# --cmd_args "" > /local/home/liuche/checkpoint/SPEC/m5out/fotonik3d_normal.out 2>&1 &

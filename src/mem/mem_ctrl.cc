@@ -177,25 +177,7 @@ MemCtrl::init()
 
     if (operationMode == "compresso") {
         /* calculate the real start address */
-        pageBufferAddr = ALIGN(64 * numPages + 8); // 64B metadata per OSPA page (4KB)
-
-        pageNumAddr = 64 * numPages;
-
-        std::vector<uint8_t> page_num_vec(8, 0);
-        dram->atomicRead(page_num_vec.data(), 64 * numPages, 8);
-        if (page_num_vec[0] >= 0x80) {
-            hasBuffered = true;
-            page_num_vec[0] = page_num_vec[0] & 0x7F;
-            pageNum = 0;
-            for (uint8_t i = 0; i < 8; i++) {
-                pageNum = (pageNum << 8) | page_num_vec[i];
-            }
-        } else {
-            hasBuffered = false;
-            pageNum = 0;
-        }
-        printf("hasBuffered %d\n", hasBuffered);
-        printf("the pageNum is %d\n", pageNum);
+        pageBufferAddr = ALIGN(64 * numPages); // 64B metadata per OSPA page (4KB)
 
         realStartAddr = pageBufferAddr + 4096; 
 
@@ -257,11 +239,15 @@ MemCtrl::startup()
 void
 MemCtrl::serialize(gem5::CheckpointOut &cp) const {
     SERIALIZE_CONTAINER(freeList);
+    SERIALIZE_SCALAR(pageNum);
+    SERIALIZE_SCALAR(hasBuffered);
 }
 
 void
 MemCtrl::unserialize(gem5::CheckpointIn &cp) {
     UNSERIALIZE_CONTAINER(freeList);
+    UNSERIALIZE_SCALAR(pageNum);
+    UNSERIALIZE_SCALAR(hasBuffered);
 }
 
 Tick
@@ -1010,11 +996,30 @@ MemCtrl::recvAtomicLogicForNew(PacketPtr pkt, MemInterface* mem_intr) {
         target_page = mcache.chooseTarget() / 64;
 
         std::vector<uint8_t> metaData(64, 0);
-        mem_intr->atomicRead(metaData.data(), target_page * 64, 64);
+        Addr memory_addr = target_page * 64;
+        mem_intr->atomicRead(metaData.data(), memory_addr, 64);
 
         uint8_t num_blocks = metaData[1];
+        std::vector<uint8_t> page(pageSizeMap[num_blocks]);
 
+        /* read the old page */
+        for (int i = 0; i < num_blocks; i++) {
+            Addr block_addr = 0;
+            for (int j = 0; j < 4; j++) {
+                block_addr = (block_addr << 8) | (metaData[4 * i + 4 + j]);
+            }
+            block_addr = block_addr << 9;
+            Addr block_size = pageSizeMap[i + 1] - pageSizeMap[i];
+            mem_intr->atomicRead(page.data() + pageSizeMap[num_blocks], block_addr, block_size); 
+        }
+        atomicRecompressForNew(page, metaData);
+
+        if (mcache.isExist(memory_addr)){
+            mcache.updateIfExist(memory_addr, metaData);
+        }
+        mem_intr->atomicWrite(metaData, memory_addr, 64);
     }
+    // TODO
 
 }
 
@@ -6611,8 +6616,7 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                             Addr chunkAddr = freeList.front();
                             DPRINTF(MemCtrl, "Line %d, freeList pop\n", __LINE__);
                             freeList.pop_front();
-                            stat_used_bytes += 512;
-
+                            
                             int chunkIdx = cur / 512;
                             uint64_t MPFN = (chunkAddr >> 9);
                             for (int u = 3; u >= 0; u--) {   // 4B per chunk
@@ -6629,6 +6633,7 @@ MemCtrl::recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr) {
                                 break;
                             }
                         }
+                        stat_used_bytes += compressedPage.size();
                         stat_max_used_bytes = std::max(stat_max_used_bytes, stat_used_bytes);
                         stats.usedMemoryByte = stat_max_used_bytes;
                         // store the size of compressedPage into the control block (using 12 bit)
@@ -8167,20 +8172,11 @@ void MemCtrl::initialPageBuffer(const PPN& ppn) {
     }
     pageNum = ppn;
     hasBuffered = true;
-    uint64_t page_num = pageNum;
-    std::vector<uint8_t> page_num_vec(8, 0);
-    for (int i = 7; i >= 0; i--) {
-        page_num_vec[i] = page_num & 0xFF;
-        page_num >>= 8;
-    }
-    assert(page_num_vec[0] < 0x80);
-    page_num_vec[0] = page_num_vec[0] | 0x80;
 
     // memset(pageBuffer.data(), 0, pageBuffer.size() * sizeof(uint8_t));
     std::vector<uint8_t> zeroPage(4096, 0);
     dram->atomicWrite(zeroPage, pageBufferAddr, 4096);
     dram->atomicWrite(metaData, ppn * 64, 64);
-    dram->atomicWrite(page_num_vec, pageNumAddr ,8);
 }
 
 void
@@ -10477,7 +10473,159 @@ MemCtrl::recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData) {
 }
 
 
+void
+MemCtrl::atomicRecompressForNew(std::vector<uint8_t>& page, std::vector<uint8_t>& metaData) {
 
+    // /* pkt is readPage pkt */
+    // uint8_t coverage = new_getCoverage(metaData);
+
+    // if (coverage == 0) {
+    //     printf("[warning]: the coverage is zero\n");
+    //     // PacketPtr writeBlock = new Packet(pkt);
+    //     // Addr block_addr = 0;
+    //     // for (int u = 0; u < 4; u++) {   // 4B per MPFN
+    //     //     block_addr = (block_addr << 8) | (metaData[4 + u]);
+    //     // }
+    //     // block_addr = block_addr << 9;
+    //     // uint64_t block_size = pageSizeMap[1] - pageSizeMap[0];
+    //     // writeBlock->configAsWriteBlock(pkt, block_addr, block_size);
+    //     // memset(writeBlock->getPtr<uint8_t>(), 0, block_size);
+    //     // assignToQueueForNew(writeBlock);
+    //     return;
+    // }
+
+    // std::vector<uint8_t> page(4096, 0);
+
+    // /* restore the page */
+    // uint64_t offset = 0;
+    // uint64_t start_pos = metaData[2] * 64;
+    // for (int i = 0; i < coverage; i++) {
+    //     uint8_t type = new_getType(metaData, i);
+    //     if (type < 0b100) {
+    //         /* the cacheline is not overflow */
+    //         std::vector<uint8_t> cacheLine(64, 0);
+    //         memcpy(cacheLine.data(), compressed_page.data() + offset, sizeMap[type]);
+    //         new_restoreData(cacheLine, type);
+    //         memcpy(page.data() + 64 * i, cacheLine.data(), 64);
+
+    //     } else {
+    //         assert(start_pos != 0);
+    //         uint8_t overflowIdx = compressed_page[offset];
+    //         memcpy(page.data() + 64 * i, compressed_page.data() + overflowIdx * 64 + start_pos, 64);
+    //     }
+    //     offset += sizeMap[type & 0b11];
+
+    //     // printf("\n");
+
+    //     // for (int rt = 0; rt < 64; rt++) {
+    //     //     if (rt % 8 == 0) {
+    //     //         printf("\n");
+    //     //     }
+    //     //     printf("%02x ", static_cast<unsigned int>(page[64 * i + rt]));
+    //     // }
+    //     // printf("\n");
+
+    // }
+
+    // /* compress the page and generate the new metaData */
+    // std::vector<uint8_t> new_metaData(64, 0);
+    // uint64_t new_size = 0;
+    // assert(coverage <= 64);
+    // new_metaData[0] = 0x80 | coverage;
+
+    // for (int i = 0; i < coverage; i++) {
+    //     std::vector<uint8_t> cacheLine(64);
+    //     memcpy(cacheLine.data(), page.data() + i * 64, 64);
+    //     std::vector<uint8_t> compressed_data = compressForNew(cacheLine);
+    //     memcpy(page.data() + new_size, compressed_data.data(), compressed_data.size());
+    //     if (isAllZero(cacheLine)) {
+    //         /* do nothing */
+    //         assert(compressed_data.size() == 1);
+    //         new_size += 1;
+    //     } else {
+    //         if (compressed_data.size() <= 22) {
+    //             new_setType(new_metaData, i, 0b001);
+    //             new_size += 22;
+    //         } else if (compressed_data.size() <= 44) {
+    //             new_setType(new_metaData, i, 0b010);
+    //             new_size += 44;
+    //         } else {
+    //             new_setType(new_metaData, i, 0b011);
+    //             new_size += 64;
+    //         }
+    //     }
+    // }
+
+    // if (coverage == 64) {
+    //     uint64_t startOverflowRegion = ((new_size + 63) >> 6) << 6;
+    //     assert(startOverflowRegion >= new_size);
+    //     new_metaData[2] = (startOverflowRegion / 64);
+    //     assert(startOverflowRegion < pageSizeMap[9]);
+    //     new_size = startOverflowRegion;
+    // }
+
+
+    
+    // auto it = std::lower_bound(pageSizeMap.begin(), pageSizeMap.end(), new_size);
+    // uint64_t chunk_num = it - pageSizeMap.begin();
+    // assert(chunk_num >= 1);
+
+    // new_metaData[1] = chunk_num;
+    // assert(stat_used_bytes >= pageSizeMap[metaData[1]]);
+    // stat_used_bytes -= pageSizeMap[metaData[1]];
+
+    // for (int cn = 0; cn < chunk_num; cn++) {
+    //     new_allocateBlock(new_metaData, cn + 1);
+    // }
+    // assert(chunk_num <= metaData[1]);
+
+    // // if (chunk_num < metaData[1]) {
+    //     // printf("saved %d blocks \n", metaData[1] - chunk_num);
+    // // }
+    // /* give back the old blocks */
+    // for (int cn = 0; cn < metaData[1]; cn++) {
+    //     Addr old_addr = 0;
+    //     for (int u = 0; u < 4; u++){   // 4B per MPFN
+    //         old_addr = (old_addr << 8) | (metaData[4 * cn + 4 + u]);
+    //     }
+    //     if (pageSizeMap[cn + 1] - pageSizeMap[cn] == 512) {
+    //         fineGrainedFreeList.push_front(old_addr << 9);
+    //     } else {
+    //         freeList.push_front(old_addr << 9);
+    //     }
+    // }
+
+    // // printf("Recompress: the old metaData is: \n");
+    // // for (int k = 0; k < 64; k++) {
+    // //     printf("%02x",static_cast<unsigned>(metaData[k]));
+    // // }
+    // // printf("\n");
+
+    // /* update the metaData */
+    // metaData = new_metaData;
+
+    // // printf("Recompress: the new metaData is: \n");
+    // // for (int k = 0; k < 64; k++) {
+    // //     printf("%02x",static_cast<unsigned>(metaData[k]));
+    // // }
+    // // printf("\n");
+
+    // /* issue writeBlock pkt to write to memory */
+    // pkt->new_subPktCnt = chunk_num;
+    // for (int cn = 0; cn < chunk_num; cn++) {
+    //     PacketPtr writeBlock = new Packet(pkt);
+    //     Addr block_addr = 0;
+    //     for (int u = 0; u < 4; u++) {   // 4B per MPFN
+    //         block_addr = (block_addr << 8) | (metaData[4 * cn + 4 + u]);
+    //     }
+    //     block_addr = block_addr << 9;
+    //     uint64_t block_size = pageSizeMap[cn + 1] - pageSizeMap[cn];
+    //     writeBlock->configAsWriteBlock(pkt, block_addr, block_size);
+    //     memcpy(writeBlock->getPtr<uint8_t>(), page.data() + pageSizeMap[cn], block_size);
+    //     assignToQueueForNew(writeBlock);
+    // }
+
+}
 
 
 } // namespace memory

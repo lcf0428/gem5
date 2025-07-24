@@ -18,10 +18,10 @@ options = parser.parse_args()
 
 system = System()
 system.clk_domain = SrcClockDomain()
-system.clk_domain.clock = "1GHz"
+system.clk_domain.clock = "3GHz"
 system.clk_domain.voltage_domain = VoltageDomain()
 system.mem_mode = "timing"
-system.mem_ranges = [AddrRange("512MiB")]
+system.mem_ranges = [AddrRange("20GiB")]
 
 system.cpu = X86TimingSimpleCPU()
 system.membus = SystemXBar()

@@ -2341,10 +2341,10 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
                 pkt->cmdString());
         }
     } else {
-        /*  the mode = 2*/
+        /*  the mode = 2 */
         assert(pkt->isWrite());
         assert(pkt->new_backup);
-        PacketPtr real_recv_pkt = pkt->new_backup;
+        // PacketPtr real_recv_pkt = pkt->new_backup;
 
         /* get initial information */
         unsigned size = pkt->getSize();
@@ -2366,14 +2366,14 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
             assert((size & (burst_size - 1)) == 0);
             assert(pkt_count == (size / burst_size));
 
-            if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
-                printf("Functional write: ");
-                uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
-                for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
-                printf("%02x ", static_cast<unsigned int>(start[ts]));
-                }
-                printf("\n");
-            }
+            // if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 0)) {
+            //     printf("Functional write: ");
+            //     uint8_t* start = real_recv_pkt->getPtr<uint8_t>();
+            //     for (int ts = 0; ts < real_recv_pkt->getSize(); ts++) {
+            //     printf("%02x ", static_cast<unsigned int>(start[ts]));
+            //     }
+            //     printf("\n");
+            // }
 
             for (unsigned int i = 0; i < pkt_count; i++) {
                 uint64_t ppn = addr >> 12;
@@ -2434,36 +2434,34 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
 
                 uint8_t* real_host_addr = toHostAddr(real_addr);
 
-                if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
-                    printf("the cacheLineIdx is %d\n", static_cast<unsigned int>(cacheLineIdx));
-                    printf("the origin space data resides is 0x%lx\n", translationRes[0]);
-                    printf("the real mpa address is 0x%lx\n", real_addr);
-                    printf("ppn is %d, the metadata is:\n", ppn);
-                    for (int k = 0; k < 64; k++) {
-                        printf("%02x",static_cast<unsigned>(metaData[k]));
-                    }
-                    printf("\n");
-                    printf("the new_cacheline size is %d\n", new_cacheLine.size());
-                    printf("the old type of cacheline is %d\n", static_cast<unsigned int>(type));
+                // if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                //     printf("the cacheLineIdx is %d\n", static_cast<unsigned int>(cacheLineIdx));
+                //     printf("the origin space data resides is 0x%lx\n", translationRes[0]);
+                //     printf("the real mpa address is 0x%lx\n", real_addr);
+                //     printf("ppn is %d, the metadata is:\n", ppn);
+                //     for (int k = 0; k < 64; k++) {
+                //         printf("%02x",static_cast<unsigned>(metaData[k]));
+                //     }
+                //     printf("\n");
+                //     printf("the new_cacheline size is %d\n", new_cacheLine.size());
+                //     printf("the old type of cacheline is %d\n", static_cast<unsigned int>(type));
 
-                }
-
-
+                // }
 
 
                 if (pmemAddr) {
                     if (type >= 0b100 || translationRes[2] == 0) {
                         std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
-                        if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
-                            printf("actual write data is: \n");
-                            for (int is = 0; is < new_cacheLine.size(); is++) {
-                                if (is % 8 == 0) {
-                                    printf("\n");
-                                }
-                                printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
+                        // if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
+                        //     printf("actual write data is: \n");
+                        //     for (int is = 0; is < new_cacheLine.size(); is++) {
+                        //         if (is % 8 == 0) {
+                        //             printf("\n");
+                        //         }
+                        //         printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
 
-                            }
-                        }
+                        //     }
+                        // }
                     } else {
                         uint64_t prefixLen = sizeMap[type] - translationRes[2];
                         if (prefixLen >= new_cacheLine.size()) {
