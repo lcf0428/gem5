@@ -470,9 +470,9 @@ AbstractMemory::access(PacketPtr pkt)
         }
 
         if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
-            // printf("Atomic read marker: ");
-            printf("marker:%lx\n", pkt);
-            printf("Timing read marker: ");
+            printf("Atomic read marker: ");
+            // printf("marker:%lx\n", pkt);
+            // printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
             for (int ts = 0; ts < pkt->getSize(); ts++) {
                printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -500,9 +500,9 @@ AbstractMemory::access(PacketPtr pkt)
             if (pmemAddr) {
 
                 if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
-                    // printf("Atomic write marker: ");
-                    printf("marker:%lx\n", pkt);
-                    printf("Timing write marker: ");
+                    printf("Atomic write marker: ");
+                    // printf("marker:%lx\n", pkt);
+                    // printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
                     printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -1407,14 +1407,14 @@ AbstractMemory::accessForNew(PacketPtr pkt, uint8_t mode) {
             }
             if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
                 // printf("Atomic read marker: ");
-                printf("marker:%lx\n", pkt);
-                printf("Timing read marker: ");
-                uint8_t* start = pkt->getPtr<uint8_t>();
-                for (int ts = 0; ts < pkt->getSize(); ts++) {
-                    printf("%02x ", static_cast<unsigned int>(start[ts]));
-                }
-                printf("\n");
-                fflush(stdout);
+                // printf("marker:%lx\n", pkt);
+                // printf("Timing read marker: ");
+                // uint8_t* start = pkt->getPtr<uint8_t>();
+                // for (int ts = 0; ts < pkt->getSize(); ts++) {
+                //     printf("%02x ", static_cast<unsigned int>(start[ts]));
+                // }
+                // printf("\n");
+                // fflush(stdout);
             }
             TRACE_PACKET(real_recv_pkt->req->isInstFetch() ? "IFetch" : "Read");
             if (collectStats) {
@@ -1435,14 +1435,14 @@ AbstractMemory::accessForNew(PacketPtr pkt, uint8_t mode) {
                 if (pmemAddr) {
                     if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
                         // printf("Atomic write marker: ");
-                        printf("marker:%lx\n", pkt);
-                        printf("Timing write marker: ");
-                        uint8_t* start = pkt->getPtr<uint8_t>();
-                        for (int ts = 0; ts < pkt->getSize(); ts++) {
-                        printf("%02x ", static_cast<unsigned int>(start[ts]));
-                        }
-                        printf("\n");
-                        fflush(stdout);
+                        // printf("marker:%lx\n", pkt);
+                        // printf("Timing write marker: ");
+                        // uint8_t* start = pkt->getPtr<uint8_t>();
+                        // for (int ts = 0; ts < pkt->getSize(); ts++) {
+                        // printf("%02x ", static_cast<unsigned int>(start[ts]));
+                        // }
+                        // printf("\n");
+                        // fflush(stdout);
                     }
                     
                 }
@@ -2184,14 +2184,14 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
                     if (type >= 0b100 || translationRes[2] == 0) {
                         std::memcpy(real_host_addr, new_cacheLine.data(), new_cacheLine.size());
                         if (isAddressCoveredForAM(real_recv_pkt->getAddr(),real_recv_pkt->getSize(), 1)) {
-                            printf("actual write data is: \n");
-                            for (int is = 0; is < new_cacheLine.size(); is++) {
-                                if (is % 8 == 0) {
-                                    printf("\n");
-                                }
-                                printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
-
-                            }
+                            // printf("actual write data is: \n");
+                            // for (int is = 0; is < new_cacheLine.size(); is++) {
+                            //     if (is % 8 == 0) {
+                            //         printf("\n");
+                            //     }
+                            //     printf("%02x ",static_cast<unsigned>(real_host_addr[is]));
+                            // }
+                            // printf("\n");
                         }
                     } else {
                         uint64_t prefixLen = sizeMap[type] - translationRes[2];

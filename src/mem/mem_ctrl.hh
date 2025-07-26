@@ -1281,7 +1281,7 @@ class MemCtrl : public qos::MemCtrl
 
     void recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData);
 
-    void atomicRecompressForNew(std::vector<uint8_t>& page, std::vector<uint8_t>& metaData);
+    void atomicRecompressForNew(std::vector<uint8_t>& page, std::vector<uint8_t>& metaData, MemInterface* mem_intr);
   };
 
 } // namespace memory
