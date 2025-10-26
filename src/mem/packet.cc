@@ -683,4 +683,70 @@ Packet::configAsWriteBlock(PacketPtr pkt, Addr addr, uint64_t size) {
     newSetType(new_writeBlock);
 }
 
+
+/* start implementation for secure functionalities */
+void
+Packet::configSecurePkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead) {
+    if (isRead) {
+        setReadCmd();
+    } else {
+        setWriteCmd();
+    }
+    
+    setAddr(addr);
+    setSizeForMC(size);
+    allocateForMC();
+    preForSecure = pkt;
+    pkt->ref_cnt++;
+}
+
+void
+Packet::configAsSecureAuxPkt(PacketPtr pkt, Addr addr, uint64_t size) {
+    configSecurePkt(pkt, addr, size, pkt->isRead());
+    assert(pkt->getSize() == size);
+    memcpy(data, pkt->getPtr<uint8_t>(), size);
+    secureSetType(secure_auxiliary);
+}
+
+
+void
+Packet::configAsSecureReadForCompress(PacketPtr pkt, Addr addr, uint64_t size) {
+    configSecurePkt(pkt, addr, size, true);
+    secureSetType(secure_readForCompress);
+}
+
+void
+Packet::configAsSecureReadForDecompress(PacketPtr pkt, Addr addr, uint64_t size) {
+    configSecurePkt(pkt, addr, size, true);
+    secureSetType(secure_readForDecompress);
+}
+
+void
+Packet::configAsSecureReadForWrite(PacketPtr pkt, Addr addr, uint64_t size) {
+    configSecurePkt(pkt, addr, size, true);
+    secureSetType(secure_readForWrite);
+}
+
+void
+Packet::configAsSecureReadMetaData(PacketPtr pkt, Addr addr, uint64_t size) {
+    configSecurePkt(pkt, addr, size, true);
+    secureSetType(secure_readMetaData);
+}
+
+void
+Packet::configAsSecureWriteForCompress(PacketPtr pkt, Addr addr, uint8_t* payload_data, uint64_t data_size) {
+    configSecurePkt(pkt, addr, data_size, false);
+    memcpy(data, payload_data, data_size);
+    secureSetType(secure_writeForCompress);
+}
+
+void
+Packet::configAsSecureWriteForDecompress(PacketPtr pkt, Addr addr, uint8_t* payload_data, uint64_t data_size) {
+    configSecurePkt(pkt, addr, data_size, false);
+    memcpy(data, payload_data, data_size);
+    secureSetType(secure_writeForDecompress);
+}
+
+/* end for secure */
+
 } // namespace gem5

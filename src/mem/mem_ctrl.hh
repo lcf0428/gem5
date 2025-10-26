@@ -368,6 +368,9 @@ class MemCtrl : public qos::MemCtrl
 
     bool addToReadQueueForNew(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
+    
+    bool addToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, 
+                        MemInterface* mem_intr);
 
     /**
      * Decode the incoming pkt, create a mem_pkt and push to the
@@ -391,6 +394,9 @@ class MemCtrl : public qos::MemCtrl
 
     bool addToWriteQueueForNew(PacketPtr pkt, unsigned int pkt_count,
                          MemInterface* mem_intr);
+
+    void addToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
+                          MemInterface* mem_intr);
 
     /**
      * Actually do the burst based on media specific access function.
@@ -423,6 +429,9 @@ class MemCtrl : public qos::MemCtrl
                                                 MemInterface* mem_intr);
 
     virtual void accessAndRespondForNew(PacketPtr pkt, Tick static_latency,
+                                                MemInterface* mem_intr);
+
+    virtual void accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
     /**
      * Determine if there is a packet that can issue.
@@ -666,6 +675,28 @@ class MemCtrl : public qos::MemCtrl
           return res;
         }
 
+        bool isFull() {
+          return _sz == _capacity;
+        }
+
+        Addr lastElemAddr() {
+          ListNode* target = tailer->prev;
+          assert (target != header);
+          return target->addr;
+        }
+
+        void pop() {
+          /* remove last elem of cache and return the addr */
+          ListNode* target = tailer->prev;
+          assert (target != header);
+          target->prev->succ = tailer;
+          tailer->prev = target->prev;
+          Addr addr = target->addr;
+          hmap.erase(addr);
+          delete target;
+          _sz--;
+        }
+
       private:
         void update(ListNode* node) {
           node->prev->succ = node->succ;
@@ -841,6 +872,28 @@ class MemCtrl : public qos::MemCtrl
     std::list<PPN> overflowPages;
 
     /* ====== end for the new architecture ======*/
+
+    /* ===== start for secure architecture ====== */
+
+    std::list<PacketPtr> processPktListForSecure;
+
+    Addr startAddrForSecureMetaData;
+
+    PacketPtr pendingPktForSecure;
+
+    std::unordered_map<PacketPtr, Tick> delayByDecompressForSecure;
+
+    bool blockedForSecure;
+
+    uint64_t blockedNumForSecure;
+
+    std::list<PacketPtr> blockedQueueForSecure;
+
+    std::list<uint64_t> smallChunkList;
+
+    std::list<uint64_t> largeChunkList;
+
+    /* ===== end for secure architecture ====== */
 
     /* ======= start for the stats ====== */
 
@@ -1149,16 +1202,19 @@ class MemCtrl : public qos::MemCtrl
     bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
     bool recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked = false);
     bool recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked = false);
+    bool recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked = false);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool hasBlocked = false);
+    bool recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr);
 
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForNew(PacketPtr pkt, MemInterface* mem_intr);
+    Tick recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr);
 
     /* ====== useful functions for compresso implementation =====*/
 
@@ -1282,6 +1338,28 @@ class MemCtrl : public qos::MemCtrl
     void recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData);
 
     void atomicRecompressForNew(std::vector<uint8_t>& page, std::vector<uint8_t>& metaData, MemInterface* mem_intr);
+
+    /* ===== end for new ===== */
+
+    /* ===== start functionality for secure ===== */
+
+    uint64_t parseMetaDataForSecure(const std::vector<uint8_t>& metaData, int type);
+
+    void tryRecyclePkt(PacketPtr pkt, bool needDecrRefCnt = true);
+
+    void initialMetaDataForSecure(std::vector<uint8_t>& metaDataEntry);
+
+    void addSubPktToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
+
+    bool addSubPktToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
+
+    Addr allocateChunkForSecure(int chunk_type);
+
+    void recycleChunkForSecure(Addr chunk_addr, int chunk_type);
+
+    void afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr);
+
+    /* ===== end functinoality for secure ===== */
   };
 
 } // namespace memory

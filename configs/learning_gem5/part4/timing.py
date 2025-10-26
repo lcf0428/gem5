@@ -62,8 +62,8 @@ thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
     "../../../",
-    # "tests/test-progs/hello/bin/x86/linux/hello",
-    "tests/test-progs/threads/bin/x86/linux/threads",
+    "tests/test-progs/hello/bin/x86/linux/hello",
+    # "tests/test-progs/threads/bin/x86/linux/threads",
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
     # "../../Mibench/mibench/security/sha/sha",
     # "../../Mibench/mibench/office/stringsearch/search_large",

@@ -362,6 +362,11 @@ class AbstractMemory : public ClockedObject
     */
     void accessForNew(PacketPtr pkt, uint8_t mode);
 
+    /*
+     * perform an untimed memory access specially for the secure architecture
+    */
+    void accessForSecure(PacketPtr pkt);
+
     /**
      * Perform an untimed memory read or write without changing
      * anything but the memory itself. No stats are affected by this
@@ -390,6 +395,7 @@ class AbstractMemory : public ClockedObject
 
     void functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr, int mode);
 
+    void functionalAccessForSecure(PacketPtr pkt);
 
     /* ====== special function for compresso ====== */
     uint8_t getType(const std::vector<uint8_t>& metaData, const uint8_t& index);

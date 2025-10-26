@@ -296,9 +296,10 @@ class Packet : public Printable, public Extensible<Packet>
   public:
     typedef uint32_t FlagsType;
     typedef gem5::Flags<FlagsType> Flags;
-    typedef uint32_t PacketTypeForDyL;
     typedef uint32_t PacketType;
+    typedef uint32_t PacketTypeForDyL;
     typedef uint32_t PacketTypeForNew;
+    typedef uint32_t PacketTypeForSecure;
 
   private:
     enum : FlagsType
@@ -646,6 +647,30 @@ class Packet : public Printable, public Extensible<Packet>
     uint64_t new_targetPage;  /* only used by readPage */
 
     /* ===== end for new ===== */
+
+
+    /* ===== special for secure ===== */
+    Addr backupForSecure;
+
+    PacketPtr preForSecure;
+
+    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMapForSecure;
+
+    enum : PacketTypeForSecure
+    {
+        secure_origin              = 0x00000000,
+        secure_auxiliary           = 0x00000001,
+        secure_readMetaData        = 0x00000002,
+        secure_readForCompress     = 0x00000004,
+        secure_writeForCompress    = 0x00000008,
+        secure_readForDecompress   = 0x00000010,
+        secure_writeForDecompress  = 0x00000020,
+        secure_readForWrite        = 0x00000040,
+    };
+
+    PacketTypeForSecure securePType;
+    /* ===== end for secure ===== */
+
 
     /**
      * Push a new sender state to the packet and make the current
@@ -1916,6 +1941,27 @@ class Packet : public Printable, public Extensible<Packet>
     void configAsWriteBlock(PacketPtr pkt, Addr addr, uint64_t size);
 
     /* ============= end for new ============*/
+
+    /* ===== special functionality for secure ===== */
+    void secureSetType(const PacketTypeForSecure& t) { securePType = t; }
+
+    void configSecurePkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead);
+
+    void configAsSecureAuxPkt(PacketPtr pkt, Addr addr, uint64_t size);
+
+    void configAsSecureReadForCompress(PacketPtr pkt, Addr addr, uint64_t size);
+
+    void configAsSecureReadForDecompress(PacketPtr pkt, Addr addr, uint64_t size);
+
+    void configAsSecureReadForWrite(PacketPtr pkt, Addr addr, uint64_t size);
+
+    void configAsSecureReadMetaData(PacketPtr pkt, Addr addr, uint64_t size);
+
+    void configAsSecureWriteForCompress(PacketPtr pkt, Addr addr, uint8_t* data, uint64_t data_size);
+
+    void configAsSecureWriteForDecompress(PacketPtr pkt, Addr addr, uint8_t* data, uint64_t data_size);
+
+    /* ===== end for secure =====*/
 };
 
 } // namespace gem5

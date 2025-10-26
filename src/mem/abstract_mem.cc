@@ -54,7 +54,7 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x1d7b00;
+        // uintptr_t target_addr = 0x378d0;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -1567,6 +1567,163 @@ AbstractMemory::accessForNew(PacketPtr pkt, uint8_t mode) {
     }
 }
 
+
+void
+AbstractMemory::accessForSecure(PacketPtr pkt) {
+    /* when this function is called, the pkt is always the aux pkt*/
+    assert(pkt->securePType == 0x1);
+    /* the origin pkt should never be changed */
+    PacketPtr origin_pkt = pkt->preForSecure;
+
+
+    if (origin_pkt->cacheResponding()) {
+        DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
+                origin_pkt->getAddr());
+        return;
+    }
+
+    if (origin_pkt->cmd == MemCmd::CleanEvict || origin_pkt->cmd == MemCmd::WritebackClean) {
+        DPRINTF(MemoryAccess, "CleanEvict  on 0x%x: not responding\n",
+                origin_pkt->getAddr());
+      return;
+    }
+
+    assert(pkt->getAddrRange().isSubset(range));
+
+    uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+    if (pkt->cmd == MemCmd::SwapReq) {
+        if (pkt->isAtomicOp()) {
+            if (pmemAddr) {
+                pkt->setData(host_addr);
+                (*(pkt->getAtomicOp()))(host_addr);
+            }
+        } else {
+            std::vector<uint8_t> overwrite_val(pkt->getSize());
+            uint64_t condition_val64;
+            uint32_t condition_val32;
+
+            panic_if(!pmemAddr, "Swap only works if there is real memory " \
+                     "(i.e. null=False)");
+
+            bool overwrite_mem = true;
+            // keep a copy of our possible write value, and copy what is at the
+            // memory address into the packet
+            pkt->writeData(&overwrite_val[0]);
+            pkt->setData(host_addr);
+
+            if (pkt->req->isCondSwap()) {
+                if (pkt->getSize() == sizeof(uint64_t)) {
+                    condition_val64 = pkt->req->getExtraData();
+                    overwrite_mem = !std::memcmp(&condition_val64, host_addr,
+                                                 sizeof(uint64_t));
+                } else if (pkt->getSize() == sizeof(uint32_t)) {
+                    condition_val32 = (uint32_t)pkt->req->getExtraData();
+                    overwrite_mem = !std::memcmp(&condition_val32, host_addr,
+                                                 sizeof(uint32_t));
+                } else
+                    panic("Invalid size for conditional read/write\n");
+            }
+
+            if (overwrite_mem)
+                std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
+
+            assert(!pkt->req->isInstFetch());
+            TRACE_PACKET("Read/Write");
+            if (collectStats) {
+                stats.numOther[pkt->req->requestorId()]++;
+            }
+        }
+    } else if (pkt->isRead()) {
+        assert(!pkt->isWrite());
+        if (origin_pkt->isLLSC()) {
+            assert(!origin_pkt->fromCache());
+            // if the packet is not coming from a cache then we have
+            // to do the LL/SC tracking here
+            trackLoadLocked(origin_pkt);
+        }
+        if (pmemAddr) {
+            pkt->setData(host_addr);
+        }
+
+        if (isAddressCoveredForAM(origin_pkt->getAddr(), origin_pkt->getSize(), 0)) {
+            printf("Atomic read marker: ");
+            // printf("marker:%lx\n", pkt);
+            // printf("Timing read marker: ");
+            uint8_t* start = pkt->getPtr<uint8_t>();
+            for (int ts = 0; ts < pkt->getSize(); ts++) {
+               printf("%02x ", static_cast<unsigned int>(start[ts]));
+            }
+            printf("\n");
+            fflush(stdout);
+        }
+
+        TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
+        if (collectStats) {
+            stats.numReads[pkt->req->requestorId()]++;
+            stats.bytesRead[pkt->req->requestorId()] += pkt->getSize();
+            if (pkt->req->isInstFetch()) {
+                stats.bytesInstRead[pkt->req->requestorId()] += pkt->getSize();
+            }
+        }
+    } else if (origin_pkt->isInvalidate() || origin_pkt->isClean()) {
+        assert(!pkt->isWrite());
+        // in a fastmem system invalidating and/or cleaning packets
+        // can be seen due to cache maintenance requests
+
+        // no need to do anything
+    } else if (pkt->isWrite()) {
+        if (writeOK(origin_pkt)) {
+            if (pmemAddr) {
+
+                if (isAddressCoveredForAM(origin_pkt->getAddr(), origin_pkt->getSize(), 0)) {
+                    printf("Atomic write marker: ");
+                    // printf("marker:%lx\n", pkt);
+                    // printf("Timing write marker: ");
+                    uint8_t* start = pkt->getPtr<uint8_t>();
+                    for (int ts = 0; ts < pkt->getSize(); ts++) {
+                    printf("%02x ", static_cast<unsigned int>(start[ts]));
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                }
+
+
+                // if (pkt->getAddr() <= 0x1378d0 && pkt->getAddr() + pkt->getSize() > 0x1378d0) {
+                //     printf("pkt content is \n");
+
+                //     for (int i = 0; i < pkt->getSize(); i++) {
+                //         if (i % 8 == 0) {
+                //             printf("\n");
+                //         }
+                //         printf("%lx ", *(pkt->getPtr<uint8_t>() + i));
+                //     }
+
+                // }
+
+
+                pkt->writeData(host_addr);
+                DPRINTF(MemoryAccess, "%s write due to %s\n",
+                        __func__, origin_pkt->print());
+            }
+            assert(!pkt->req->isInstFetch());
+            TRACE_PACKET("Write");
+            if (collectStats) {
+                stats.numWrites[pkt->req->requestorId()]++;
+                stats.bytesWritten[pkt->req->requestorId()] += pkt->getSize();
+            }
+        }
+    } else {
+        panic("Unexpected packet %s", origin_pkt->print());
+    }
+
+    memcpy(origin_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), origin_pkt->getSize());
+
+    if (origin_pkt->needsResponse()) {
+        origin_pkt->makeResponse();
+    }
+}
+
 void
 AbstractMemory::functionalAccess(PacketPtr pkt)
 {
@@ -1595,7 +1752,7 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
 
         uint8_t* test_start = pkt->getPtr<uint8_t>();
         if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
-            printf("Functional read: ");
+            printf("Functional read marker: ");
             for (int u = 0; u < pkt->getSize(); u++) {
                 printf("%02x ", static_cast<unsigned int>(test_start[u]));
             }
@@ -1610,7 +1767,7 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
         }
 
         if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0)) {
-            printf("Functional write: ");
+            printf("Functional write marker: ");
             uint8_t* test_start = pkt->getPtr<uint8_t>();
             for (int i = 0; i < pkt->getSize(); i++) {
                 printf("%02x ", static_cast<unsigned int>(test_start[i]));
@@ -2485,6 +2642,82 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
                 pkt->cmdString());
         }
 
+    }
+
+}
+
+
+void
+AbstractMemory::functionalAccessForSecure(PacketPtr pkt) {
+    /* when this function is called, the pkt is always the aux pkt*/
+    assert(pkt->securePType == 0x1);
+    /* the origin pkt should never be changed */
+    PacketPtr origin_pkt = pkt->preForSecure;
+
+
+    assert(pkt->getAddrRange().isSubset(range));
+
+    uint8_t *host_addr = toHostAddr(pkt->getAddr());
+
+    if (pkt->isRead()) {
+        if (pmemAddr) {
+            pkt->setData(host_addr);
+        }
+
+        assert(pkt->getSize() == origin_pkt->getSize());
+        memcpy(origin_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+
+        uint8_t* test_start = origin_pkt->getPtr<uint8_t>();
+        if (isAddressCoveredForAM(origin_pkt->getAddr(), origin_pkt->getSize(), 0)) {
+            printf("Functional read marker: ");
+            for (int u = 0; u < origin_pkt->getSize(); u++) {
+                printf("%02x ", static_cast<unsigned int>(test_start[u]));
+            }
+            printf("\n");
+        }
+
+        TRACE_PACKET("Read");
+        origin_pkt->makeResponse();
+    } else if (pkt->isWrite()) {
+        if (pmemAddr) {
+            pkt->writeData(host_addr);
+        }
+
+        if (isAddressCoveredForAM(origin_pkt->getAddr(), origin_pkt->getSize(), 0)) {
+            printf("Functional write marker: ");
+            uint8_t* test_start = origin_pkt->getPtr<uint8_t>();
+            for (int i = 0; i < origin_pkt->getSize(); i++) {
+                printf("%02x ", static_cast<unsigned int>(test_start[i]));
+            }
+            printf("\n");
+        }
+
+        // if (pkt->getAddr() <= 0x1378d0 && pkt->getAddr() + pkt->getSize() > 0x1378d0) {
+        //     printf("pkt content is \n");
+
+        //     for (int i = 0; i < pkt->getSize(); i++) {
+        //         if (i % 8 == 0) {
+        //             printf("\n");
+        //         }
+        //         printf("%lx ", *(pkt->getPtr<uint8_t>() + i));
+        //     }
+
+        // }
+
+        TRACE_PACKET("Write");
+        origin_pkt->makeResponse();
+    } else if (pkt->isPrint()) {
+        Packet::PrintReqState *prs =
+            dynamic_cast<Packet::PrintReqState*>(origin_pkt->senderState);
+        assert(prs);
+        // Need to call printLabels() explicitly since we're not going
+        // through printObj().
+        prs->printLabels();
+        // Right now we just print the single byte at the specified address.
+        ccprintf(prs->os, "%s%#x\n", prs->curPrefix(), *host_addr);
+    } else {
+        panic("AbstractMemory: unimplemented functional command %s",
+              origin_pkt->cmdString());
     }
 
 }

@@ -62,17 +62,18 @@ thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
     "../../../",
+    "tests/test-progs/hello/bin/x86/linux/hello",
     # "tests/test-progs/threads/bin/x86/linux/threads",
     # "tests/test-progs/hello/bin/x86/linux/hello",
-    "../../Mibench/mibench/security/sha/sha",
+    # "../../Mibench/mibench/security/sha/sha",
 )
 
 system.workload = SEWorkload.init_compatible(binary)
 
 # 创建进程
 process = Process()
-# process.cmd = [binary]
-process.cmd = [binary, "../../Mibench/mibench/security/sha/input_large.asc"]
+process.cmd = [binary]
+# process.cmd = [binary, "../../Mibench/mibench/security/sha/input_large.asc"]
 system.cpu.workload = process
 system.cpu.createThreads()
 
