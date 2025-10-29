@@ -107,6 +107,7 @@ class MemCtrl(QoSMemCtrl):
         "normal", "memory controller operation mode: normal, compresso, DyLeCT"
     )
 
+    recency_list_size = Param.Unsigned(0, "determine the size of recency list")
 
 add_citation(
     MemCtrl,

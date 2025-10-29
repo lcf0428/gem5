@@ -8,6 +8,12 @@ from m5.objects import *
 parser = argparse.ArgumentParser(description="OOO core with DRAM energy stats and full cache hierarchy")
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
                     help="Memory controller mode: normal, compresso, DyLeCT")
+parser.add_argument(
+    "--recency_list_size",
+    type=int,
+    default=0,
+    help="determine the size of recency list, only helpful in DyLeCT mode",
+)
 parser.add_argument("--binary", type=str, required=True,
                     help="Path to the binary to execute")
 parser.add_argument("--cmd_args", type=str, default="",
@@ -59,7 +65,7 @@ system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 
 # DRAM with energy stats enabled
-system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode)
+system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode, recency_list_size=options.recency_list_size)
 system.mem_ctrl.dram = DDR4_2400_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.dram.enable_dram_powerdown = True  # 仅支持低功耗模式统计

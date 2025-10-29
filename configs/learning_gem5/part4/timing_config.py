@@ -6,6 +6,12 @@ from m5.objects import *
 parser = argparse.ArgumentParser(description="Configurable system with different operation mode of Memory Controller")
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
                     help="Memory controller mode: normal, compresso, DyLeCT")
+parser.add_argument(
+    "--recency_list_size",
+    type=int,
+    default=0,
+    help="determine the size of recency list, only helpful in DyLeCT mode",
+)
 parser.add_argument("--binary", type=str, required=True,
                     help="Path to the binary to execute")
 # parser.add_argument("--cmd_args", type=str, nargs='*', default=[],
@@ -33,7 +39,7 @@ system.cpu.interrupts[0].pio = system.membus.mem_side_ports
 system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 
-system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode)
+system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode, recency_list_size=options.recency_list_size)
 system.mem_ctrl.dram = DDR3_1600_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports

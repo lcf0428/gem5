@@ -14,6 +14,13 @@ parser.add_argument(
     help="memory controller operation mode: normal, compresso, DyLeCT",
 )
 
+parser.add_argument(
+    "--recency_list_size",
+    type=int,
+    default=0,
+    help="determine the size of recency list, only helpful in DyLeCT mode",
+)
+
 options = parser.parse_args()
 
 # 创建系统
@@ -49,7 +56,7 @@ system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 
 # 创建内存控制器
-system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode)
+system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode, recency_list_size=options.recency_list_size)
 system.mem_ctrl.dram = DDR3_1600_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports
@@ -62,18 +69,18 @@ thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
     "../../../",
-    "tests/test-progs/hello/bin/x86/linux/hello",
+    # "tests/test-progs/hello/bin/x86/linux/hello",
     # "tests/test-progs/threads/bin/x86/linux/threads",
     # "tests/test-progs/hello/bin/x86/linux/hello",
-    # "../../Mibench/mibench/security/sha/sha",
+    "../../mibench/mibench/security/sha/sha",
 )
 
 system.workload = SEWorkload.init_compatible(binary)
 
 # 创建进程
 process = Process()
-process.cmd = [binary]
-# process.cmd = [binary, "../../Mibench/mibench/security/sha/input_large.asc"]
+# process.cmd = [binary]
+process.cmd = [binary, "../../mibench/mibench/security/sha/input_large.asc"]
 system.cpu.workload = process
 system.cpu.createThreads()
 

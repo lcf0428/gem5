@@ -286,6 +286,8 @@ class MemCtrl : public qos::MemCtrl
 
     std::string operationMode;
 
+    unsigned recencyListSize;
+
     /**
      * Our incoming port, for a multi-ported controller add a crossbar
      * in front of it
@@ -897,6 +899,12 @@ class MemCtrl : public qos::MemCtrl
 
     /* ======= start for the stats ====== */
 
+    Tick lastRecordTick;
+
+    uint8_t passedInterval;
+
+    Tick recordInterval;
+
     std::unordered_set<PPN> stat_page_used;
 
     uint64_t stat_used_bytes;
@@ -906,6 +914,8 @@ class MemCtrl : public qos::MemCtrl
     uint64_t normal_used;
 
     uint64_t compress_used;
+
+    void recordMemConsumption();
 
     /* ====== end for stats ====== */
 
@@ -1025,8 +1035,8 @@ class MemCtrl : public qos::MemCtrl
         statistics::Formula requestorReadAvgLat;
         statistics::Formula requestorWriteAvgLat;
 
-        // estimate the usage of physical memory
-        statistics::Scalar usedMemoryByte;
+        // record the memory consumption occasionally
+        statistics::Vector usedMemoryByte;
     };
 
     CtrlStats stats;
@@ -1358,6 +1368,8 @@ class MemCtrl : public qos::MemCtrl
     void recycleChunkForSecure(Addr chunk_addr, int chunk_type);
 
     void afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr);
+
+    void updateMetaDataForInProcessPkt(bool isEligible, PPN ppn, const std::vector<uint8_t>& metaData); 
 
     /* ===== end functinoality for secure ===== */
   };
