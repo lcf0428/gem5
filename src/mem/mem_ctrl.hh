@@ -820,9 +820,11 @@ class MemCtrl : public qos::MemCtrl
 
     uint8_t potentialRecycle;
 
+    std::unordered_map<PPN, std::list<PPN>::iterator> recencyMap;
+
     std::list<PPN> recencyList;                 // use the PPN to refer to a certain page (page id)
     std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
-    std::list<uint64_t> moderateFreeList;       // the free list for the 512B memory block
+    std::list<uint64_t> moderateFreeList;       // the free list for the 1024B memory block
     std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block
     uint64_t startAddrForCTE;
     uint64_t startAddrForPreGather;

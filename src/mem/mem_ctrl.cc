@@ -118,11 +118,11 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     recomprInterval(10000000),
     readBufferSizeForNew(dram->readBufferSize),
     writeBufferSizeForNew(dram->writeBufferSize),  
-    blockedQueueForSecure(false),
+    blockedForSecure(false),
     pendingPktForSecure(nullptr),
     blockedNumForSecure(0),
     lastRecordTick(0), passedInterval(0),
-    recordInterval(1000000000),
+    recordInterval(0),
     stat_used_bytes(0), stat_max_used_bytes(0),
     readBufferSize(dram->readBufferSize),
     writeBufferSize(dram->writeBufferSize),
@@ -143,6 +143,10 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     writeQueue.resize(p.qos_priorities);
 
     dram->setCtrl(this, commandWindow);
+
+    recordInterval = p.tick_interval * 10000000;
+
+    printf("the record interval is setting to %lld\n", recordInterval);
 
     // perform a basic check of the write thresholds
     if (p.write_low_thresh_perc >= p.write_high_thresh_perc)
@@ -835,14 +839,20 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         }
     }
 
-    recencyList.remove(ppn);
+    auto it = recencyMap.find(ppn);
+    if (it != recencyMap.end()) {
+        recencyList.erase(it->second);
+    }
+
     recencyList.push_front(ppn);
+    recencyMap[ppn] = recencyList.begin();
 
     if (recencyList.size() > recencyListThreshold) {
 
         assert(recencyList.size() == recencyListThreshold + 1);
         PPN coldPageId = recencyList.back();
         recencyList.pop_back();
+        recencyMap.erase(coldPageId);
 
         if (isAddressCovered(pkt->getAddr(), 0, 1)) {
             printf("need to compress\n");
@@ -895,18 +905,18 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                     }
                 }
                 stat_used_bytes += 256;
-            } else if (cSize <= 512) {
+            } else if (cSize <= 1024) {
                 if (moderateFreeList.size() > 0) {
                     newAddr = moderateFreeList.front();
                     moderateFreeList.pop_front();
                 } else {
                     newAddr = freeList.front();
                     freeList.pop_front();
-                    for (int i = 1; i < 8; i++) {
-                        smallFreeList.push_back(newAddr | (i << 9));
+                    for (int i = 1; i < 4; i++) {
+                        moderateFreeList.push_back(newAddr | (i << 10));
                     }
                 }
-                stat_used_bytes += 512;
+                stat_used_bytes += 1024;
             } else {
                 if (largeFreeList.size() > 0) {
                     newAddr = largeFreeList.front();
@@ -994,9 +1004,9 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             if (compressedSize <= 256) {
                 smallFreeList.push_back(oldAddr);
                 stat_used_bytes -= 256;
-            } else if (compressedSize <= 512) {
+            } else if (compressedSize <= 1024) {
                 moderateFreeList.push_back(oldAddr);
-                stat_used_bytes -= 512;
+                stat_used_bytes -= 1024;
             } else {
                 assert(compressedSize <= 2048);
                 largeFreeList.push_back(oldAddr);
@@ -4272,6 +4282,16 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
             recencyList.remove(ppn);
             recencyList.push_front(ppn);
 
+
+            auto it = recencyMap.find(ppn);
+            if (it != recencyMap.end()) {
+                recencyList.erase(it->second);
+            }
+
+            recencyList.push_front(ppn);
+            recencyMap[ppn] = recencyList.begin();
+
+
             if (recencyList.size() > recencyListThreshold) {
                 assert(blockedForDyL == false);
                 blockedForDyL = true;
@@ -4376,11 +4396,14 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                 fflush(stdout);
             }
 
+            auto it = recencyMap.find(ppn);
+            if (it != recencyMap.end()) {
+                recencyList.erase(it->second);
+            }
 
-            recencyList.remove(ppn);
             recencyList.push_front(ppn);
-            // printf("size of recencyList is %d\n", recencyList.size());
-            // pageInProcess.insert(ppn);
+            recencyMap[ppn] = recencyList.begin();
+
             if (recencyList.size() > recencyListThreshold) {
                 assert(blockedForDyL == false);
                 blockedForDyL = true;
@@ -4521,13 +4544,14 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
 
     if (blockedForSecure) {
         assert(!hasBlocked);
-        printf("blocked for secure 1\n");
+        // printf("blocked for secure 1\n");
         if ((blockedNumForSecure + pkt_count) <= std::max(readBufferSize, writeBufferSize)) {
             blockedQueueForSecure.emplace_back(pkt);
             blockedNumForSecure += pkt_count;
+            // printf("add to the blocked queue\n");
             return true;
         } else {
-            printf("the blocked queue is full\n");
+            // printf("the blocked queue is full\n");
             if(pkt->isWrite()) {
                 retryWrReq = true;
             } else {
@@ -5746,15 +5770,20 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
 
             /* the memory controller is no longer blocked */
             /* reprocess the blocked pkt */
-            for (unsigned int u = 0; u < blockPktQueue.size(); u++) {
+            unsigned int u = 0;
+            for (; u < blockPktQueue.size();) {
                 PacketPtr blocked_pkt = blockPktQueue[u];
                 // printf("the address is blocked pkt is %lx\n", reinterpret_cast<uint64_t>(blocked_pkt));
                 bool is_accepted = recvTimingReqLogicForCompr(blocked_pkt, true);
                 if (!is_accepted) {
                     panic("should be always accept at this moment");
                 }
+                u++;
+                if (blockedForCompr) {
+                    break;
+                }
             }
-            blockPktQueue.clear();
+            blockPktQueue.erase(blockPktQueue.begin(), blockPktQueue.begin() + u);
         }
 
     } else {
@@ -5803,9 +5832,9 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             if (bufferSize <= 256) {
                 smallFreeList.push_back(base_addr);
                 stat_used_bytes -= 256;
-            } else if (bufferSize <= 512) {
+            } else if (bufferSize <= 1024) {
                 moderateFreeList.push_back(base_addr);
-                stat_used_bytes -= 512;
+                stat_used_bytes -= 1024;
             } else {
                 assert(bufferSize <= 2048);
                 largeFreeList.push_back(base_addr);
@@ -5870,18 +5899,18 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                         }
                     }
                     stat_used_bytes += 256;
-                } else if (cSize <= 512) {
+                } else if (cSize <= 1024) {
                     if (moderateFreeList.size() > 0) {
                         newAddr = moderateFreeList.front();
                         moderateFreeList.pop_front();
                     } else {
                         newAddr = freeList.front();
                         freeList.pop_front();
-                        for (int i = 1; i < 8; i++) {
-                            moderateFreeList.push_back(newAddr | (i << 9));
+                        for (int i = 1; i < 4; i++) {
+                            moderateFreeList.push_back(newAddr | (i << 10));
                         }
                     }
-                    stat_used_bytes += 512;
+                    stat_used_bytes += 1024;
                 } else {
                     if (largeFreeList.size() > 0) {
                         newAddr = largeFreeList.front();
@@ -6645,7 +6674,7 @@ MemCtrl::allocateChunkForSecure(int chunk_type) {
         assert(largeChunkList.size() > 0);
         chunk_addr = largeChunkList.front();
         largeChunkList.pop_front();
-        return chunk_addr;
+        stat_used_bytes += 4096;
     } else {
         if (smallChunkList.size() == 0) {
             assert(largeChunkList.size() > 0);
@@ -6653,6 +6682,7 @@ MemCtrl::allocateChunkForSecure(int chunk_type) {
             largeChunkList.pop_front();
             smallChunkList.emplace_back(chunk_addr + 2048);
         }
+        stat_used_bytes += 2048;
     }
     return chunk_addr;
 }
@@ -6661,8 +6691,12 @@ void
 MemCtrl::recycleChunkForSecure(Addr chunk_addr, int chunk_type) {
     if (chunk_type == 1) {
         largeChunkList.emplace_back(chunk_addr);
+        assert(stat_used_bytes >= 4096);
+        stat_used_bytes -= 4096;
     } else {
         smallChunkList.emplace_back(chunk_addr);
+        assert(stat_used_bytes >= 2048);
+        stat_used_bytes -= 2048;
     }
 }
 
@@ -7088,9 +7122,16 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
                 }
             }
         }
+        // printf("finish processed auxPkt\n");
+        // printf("is blocked for secure? %d\n", blockedForSecure);
+        // printf("is blocked queue for secure empty? %d\n", blockedQueueForSecure.empty());
 
         /* finally, we could process next reqs */
         while (!blockedQueueForSecure.empty() && !blockedForSecure) {
+            // printf("the blocked queue is \n");
+            // for (int z = 0; z < blockedQueueForSecure.size(); z++) {
+            //     printf("the %dth pkt is 0x%lx\n", z, pkt);
+            // }
             PacketPtr pkt = blockedQueueForSecure.front();
             unsigned size = pkt->getSize();
             
@@ -7896,6 +7937,7 @@ bool MemCtrl::compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_in
         potentialRecycle++;
         // DPRINTF(MemCtrl, "After incre the potential recycle, the number is %d\n", potentialRecycle);
         recencyList.pop_back();
+        recencyMap.erase(pageId);
 
         bool sign = addToReadQueueForDyL(readUncompress, ruc_pkt_count, mem_intr);
 
@@ -8817,8 +8859,12 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     }
 
     uint64_t test_old_num = recencyList.size();
-    recencyList.remove(ppn);
+    auto it = recencyMap.find(ppn);
+    if (it != recencyMap.end()) {
+        recencyList.erase(it->second);
+    }
     recencyList.push_front(ppn);
+    recencyMap[ppn] = recencyList.begin();
     uint64_t test_new_num = recencyList.size();
     if(test_new_num - test_old_num != 0) {
         normal_used += 4096;
@@ -8830,6 +8876,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         assert(recencyList.size() == recencyListThreshold + 1);
         PPN coldPageId = recencyList.back();
         recencyList.pop_back();
+        recencyMap.erase(coldPageId);
 
         if (isAddressCovered(pkt->getAddr(), 0, 1)) {
             printf("need to compress\n");
@@ -8882,18 +8929,18 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                      }
                  }
                  stat_used_bytes += 256;
-             } else if (cSize <= 512) {
+             } else if (cSize <= 1024) {
                  if (moderateFreeList.size() > 0) {
                      newAddr = moderateFreeList.front();
                      moderateFreeList.pop_front();
                  } else {
                      newAddr = freeList.front();
                      freeList.pop_front();
-                     for (int i = 1; i < 8; i++) {
-                         smallFreeList.push_back(newAddr | (i << 9));
+                     for (int i = 1; i < 4; i++) {
+                         moderateFreeList.push_back(newAddr | (i << 10));
                      }
                  }
-                 stat_used_bytes += 512;
+                 stat_used_bytes += 1024;
              } else {
                  if (largeFreeList.size() > 0) {
                      newAddr = largeFreeList.front();
@@ -8953,9 +9000,9 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         if (pageSize <= 256) {
             smallFreeList.push_back(addr);
             stat_used_bytes -= 256;
-        } else if (pageSize <= 512) {
+        } else if (pageSize <= 1024) {
             moderateFreeList.push_back(addr);
-            stat_used_bytes -= 512;
+            stat_used_bytes -= 1024;
         } else {
             assert(pageSize <= 2048);
             largeFreeList.push_back(addr);

@@ -109,11 +109,12 @@ class MemCtrl(QoSMemCtrl):
 
     recency_list_size = Param.Unsigned(0, "determine the size of recency list")
 
+    tick_interval = Param.Unsigned(10, "the tick interval between each memory consumption stats (x 10^7)")
+
 add_citation(
     MemCtrl,
     """@inproceedings{Hansson:2014:dram-controller,
-  author       = {Andreas Hansson and
-                  Neha Agarwal and
+  author       = {Andreas Hansson andNeha Agarwal and
                   Aasheesh Kolli and
                   Thomas F. Wenisch and
                   Aniruddha N. Udipi},

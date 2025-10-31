@@ -20,6 +20,12 @@ parser.add_argument(
     default=0,
     help="determine the size of recency list, only helpful in DyLeCT mode",
 )
+parser.add_argument(
+    "--tick_interval",
+    type=int,
+    default=10,
+    help="the interval to take mem snapshots",
+)
 
 options = parser.parse_args()
 
@@ -56,7 +62,7 @@ system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 
 # 创建内存控制器
-system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode, recency_list_size=options.recency_list_size)
+system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode, recency_list_size=options.recency_list_size, tick_interval=options.tick_interval)
 system.mem_ctrl.dram = DDR3_1600_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports
