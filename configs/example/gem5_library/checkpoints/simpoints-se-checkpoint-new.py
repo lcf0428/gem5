@@ -38,7 +38,8 @@ parser.add_argument("--stdin_file", type=str, help="File to feed to the program'
 parser.add_argument("--env", type=str, help="env file with enviormant variables")
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
                     help="Memory controller mode: normal, compresso, DyLeCT, new")
-
+parser.add_argument("--tick_interval", type=int, default=10,
+                    help="the interval between memory snapshots (x 10^7)")
 args = parser.parse_args()
 
 # === read simpoints file：format [(a1, b1), (a2, b2), ...]， a_i is entry point ===
@@ -87,7 +88,7 @@ print("weights is: ", weights)
 
 print("the option is: ", args.options)
 
-
+print("the tick interval is ", args.tick_interval)
 
 assert len(simpoints_list) == len(weights), "Simpoints and weights must have the same length."
 assert abs(sum(weights) - 1.0) < 1e-3, "Weights must sum to 1.0."
@@ -97,6 +98,7 @@ memory = SingleChannelDDR4_2400(size="20GiB")
 for ctrl in memory.mem_ctrl:
     ctrl.dram.enable_dram_powerdown = True
     ctrl.operation_mode = args.mem_operation_mode
+    ctrl.tick_interval = args.tick_interval
 
 processor = SimpleProcessor(
     cpu_type=CPUTypes.ATOMIC,

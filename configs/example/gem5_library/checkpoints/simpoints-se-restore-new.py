@@ -108,6 +108,9 @@ parser.add_argument("--checkpoint", type=str, required=True, help="the target ch
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
                     help="Memory controller mode: normal, compresso, DyLeCT, new")
 
+parser.add_argument("--tick_interval", type=int, default=10,
+                    help="the interval between memory snapshots (x 10^7)")
+
 args = parser.parse_args()
 
 # === read simpoints file：format [(a1, b1), (a2, b2), ...]， a_i is entry point ===
@@ -163,6 +166,7 @@ memory = SingleChannelDDR4_2400(size="20GiB")
 for ctrl in memory.mem_ctrl:
     ctrl.dram.enable_dram_powerdown = True
     ctrl.operation_mode = args.mem_operation_mode
+    ctrl.tick_interval = args.tick_interval
 
 processor = SimpleProcessor(
     # cpu_type=CPUTypes.TIMING,

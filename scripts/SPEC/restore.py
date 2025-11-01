@@ -118,6 +118,31 @@ stdin_file = [
         "ocean_benchmark3.in",
         ]
 
+tick_intervals = [
+    #  0,
+    1000000,
+    6,
+    1000000,
+    2000000,
+    2000000,
+    800000,
+    1200000,
+    1800000,
+    60000,
+    1800000,
+    1800000,
+    1000000,
+    120000,
+    # 0,
+    # 0,
+    410000,
+    5000,
+    2,
+    2400000,
+]
+
+
+
 operation_mode = sys.argv[1]
 operation_mode = str(operation_mode)
 
@@ -128,7 +153,7 @@ BUILD_DIR = "{}/gem5_results/SPEC/build".format(HOME)
 RESULTS_DIR = "{}/gem5_results/SPEC/restore".format(HOME)
 SIMULATE_DIR = "{}/scripts/SPEC".format(GEM5_DIR)
 
-restore_list = [0]
+restore_list = [8]
 
 # for i in range(len(programs)):
 # for i in range (2):
@@ -141,21 +166,33 @@ for i in restore_list:
 
     binary = binaries[i]
     arg = args[i]
+    tick_interval = str(tick_intervals[i])
+
     gem5_out = "{}/{}_{}/".format(RESULTS_DIR, program, operation_mode)
     sim_out = "restore_{}_{}.out".format(program, operation_mode)
-    checkpoint = "{}/gem5_results/SPEC/checkpoint/{}/{}/cpt".format(HOME, operation_mode, program)
+    
+    # checkpoint = "{}/gem5_results/SPEC/checkpoint/{}/{}/cpt".format(HOME, operation_mode, program)
+    base_path = "{}/gem5_results/SPEC/checkpoint/{}/{}".format(HOME, operation_mode, program)
+    cpt_folders = glob.glob(os.path.join(base_path, "cpt.*"))
+
+    if cpt_folders:
+        checkpoint = cpt_folders[0]
+        print(f"find the directory {checkpoint}")
+    else:
+        exit(1)
+
     cur_input = stdin_file[i]
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \
                     --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
-                    --checkpoint {} --warmup_interval 100000 --stdin_file {} --mem_operation_mode={} --options {} \
-                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, cur_input, operation_mode, arg, HOME, sim_out)
+                    --checkpoint {} --warmup_interval 100000 --stdin_file {} --mem_operation_mode={} --tick_interval={} --options {} \
+                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, cur_input, operation_mode, tick_interval, arg, HOME, sim_out)
     else:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \
-                    --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/SE_500B/build/nab/simpoints --weight_file {}/gem5_results/SPEC/SE_500B/build/nab/weights.txt \
-                    --checkpoint {} --warmup_interval 100000 --mem_operation_mode={} --options {} \
-                    > {}/gem5_results/SPEC/SE_500B/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, operation_mode, arg, HOME, sim_out)
+                    --cmd ./{} --simpoint_interval 10000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
+                    --checkpoint {} --warmup_interval 10000 --mem_operation_mode={} --tick_interval={} --options {} \
+                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, operation_mode, tick_interval, arg, HOME, sim_out)
 
 
     print(gem5_cmd)

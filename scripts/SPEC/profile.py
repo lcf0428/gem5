@@ -118,6 +118,29 @@ inputs = [
         "ocean_benchmark3.in",
         ]
 
+tick_intervals = [
+    #  0,
+    1000000,
+    6,
+    1000000,
+    2000000,
+    2000000,
+    800000,
+    1200000,
+    1800000,
+    60000,
+    1800000,
+    1800000,
+    1000000,
+    120000,
+    # 0,
+    # 0,
+    410000,
+    5000,
+    2,
+    2400000,
+]
+
 HOME = "/local/home/liuche"
 BASE_DIR = "{}/SPEC".format(HOME)
 GEM5_DIR = "{}/gitlab/gem5".format(HOME)

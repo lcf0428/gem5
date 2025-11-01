@@ -144,7 +144,7 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
 
     dram->setCtrl(this, commandWindow);
 
-    recordInterval = p.tick_interval * 10000000;
+    recordInterval = static_cast<uint64_t>(p.tick_interval) * 10000000LL;
 
     printf("the record interval is setting to %lld\n", recordInterval);
 

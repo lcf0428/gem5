@@ -117,6 +117,31 @@ stdin_file = [
         "",
         "ocean_benchmark3.in",
         ]
+
+tick_intervals = [
+    #  0,
+    1000000,
+    6,
+    1000000,
+    2000000,
+    2000000,
+    800000,
+    1200000,
+    1800000,
+    60000,
+    1800000,
+    1800000,
+    1000000,
+    120000,
+    # 0,
+    # 0,
+    410000,
+    5000,
+    2,
+    2400000,
+]
+
+
 operation_mode = sys.argv[1]
 operation_mode = str(operation_mode)
 
@@ -128,7 +153,7 @@ RESULTS_DIR = "{}/gem5_results/SPEC/checkpoint/{}".format(HOME, operation_mode)
 SIMULATE_DIR = "{}/scripts/SPEC".format(GEM5_DIR)
 
 
-index_list = [0]
+index_list = [16]
 
 # for i in range(len(programs)):
 # for i in range(2, 3):
@@ -141,6 +166,8 @@ for i in index_list:
 
     binary = binaries[i]
     arg = args[i]
+    tick_interval = str(tick_intervals[i])
+
     gem5_out = "{}/{}/".format(RESULTS_DIR, program)
     sim_out = "checkpoint_{}.out".format(operation_mode)
     cur_input = stdin_file[i]
@@ -148,11 +175,13 @@ for i in index_list:
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-checkpoint-new.py \
                 --simpoint_interval 1000000000 --simpoint_file {}/{}/simpoints --weight_file {}/{}/weights.txt --warmup_interval 100000 \
-                --checkpoint-path {} --env {}/env.txt --cmd ./{}  --stdin_file {} --mem_operation_mode={} --options {} > {} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, BUILD_DIR, program, BUILD_DIR, program, gem5_out, SIMULATE_DIR, binary,  cur_input, operation_mode, arg, sim_out)
+                --checkpoint-path {} --env {}/env.txt --cmd ./{}  --stdin_file {} --mem_operation_mode={} --tick_interval={} \
+                --options {} > {} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, BUILD_DIR, program, BUILD_DIR, program, gem5_out, SIMULATE_DIR, binary,  cur_input, operation_mode, tick_interval, arg, sim_out)
     else:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-checkpoint-new.py \
-                --simpoint_interval 10000000 --simpoint_file {}/{}/simpoints --weight_file {}/{}/weights.txt --warmup_interval 10000 \
-                --checkpoint-path {} --env {}/env.txt --cmd ./{} --mem_operation_mode={} --options {} > {} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, BUILD_DIR, program, BUILD_DIR, program, gem5_out, SIMULATE_DIR, binary, operation_mode, arg, sim_out)
+                --simpoint_interval 1000000000 --simpoint_file {}/{}/simpoints --weight_file {}/{}/weights.txt --warmup_interval 100000 \
+                --checkpoint-path {} --env {}/env.txt --cmd ./{} --mem_operation_mode={} --tick_interval={} \
+                --options {} > {} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, BUILD_DIR, program, BUILD_DIR, program, gem5_out, SIMULATE_DIR, binary, operation_mode, tick_interval, arg, sim_out)
 
     print(gem5_cmd)
     os.system(gem5_cmd)
