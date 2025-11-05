@@ -348,7 +348,7 @@ class AbstractMemory : public ClockedObject
      *
      * @param pkt Packet performing the access
      */
-    void access(PacketPtr pkt);
+    void access(PacketPtr pkt, unsigned long long access_cnt = 0);
 
     void accessForDyL(PacketPtr pkt, PacketPtr aux_pkt);
 
@@ -365,7 +365,7 @@ class AbstractMemory : public ClockedObject
     /*
      * perform an untimed memory access specially for the secure architecture
     */
-    void accessForSecure(PacketPtr pkt);
+    void accessForSecure(PacketPtr pkt, unsigned long long access_cnt);
 
     /**
      * Perform an untimed memory read or write without changing
@@ -375,7 +375,7 @@ class AbstractMemory : public ClockedObject
      *
      * @param pkt Packet performing the access
      */
-    void functionalAccess(PacketPtr pkt);
+    void functionalAccess(PacketPtr pkt, unsigned long long access_cnt = 0);
 
     /*
      * perform a functional access specially for DyLeCT
@@ -395,7 +395,7 @@ class AbstractMemory : public ClockedObject
 
     void functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr zeroAddr, int mode);
 
-    void functionalAccessForSecure(PacketPtr pkt);
+    void functionalAccessForSecure(PacketPtr pkt, unsigned long long access_cnt, bool updateForRead);
 
     /* ====== special function for compresso ====== */
     uint8_t getType(const std::vector<uint8_t>& metaData, const uint8_t& index);

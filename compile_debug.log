@@ -1,0 +1,134 @@
+nohup: ignoring input
+scons: Reading SConscript files ...
+Mkdir("/local/home/liuche/gem5/gem5/build/X86/gem5.build")
+Checking for linker -Wl,--as-needed support... (cached) yes
+Checking for compiler -gz support... (cached) yes
+Checking for linker -gz support... (cached) yes
+Info: Using Python config: python3-config
+Checking for C header file Python.h... (cached) yes
+Checking Python version... (cached) 3.10.6
+Checking for accept(0,0,0) in C++ library None... (cached) yes
+Checking for zlibVersion() in C++ library z... (cached) yes
+Checking for C library tcmalloc_minimal... (cached) yes
+Building in /local/home/liuche/gem5/gem5/build/X86
+"build_tools/kconfig_base.py" "/local/home/liuche/gem5/gem5/build/X86/gem5.build/Kconfig" "/local/home/liuche/gem5/gem5/src/Kconfig"
+Checking for C header file fenv.h... (cached) yes
+Checking for C header file png.h... (cached) no
+Warning: Header file <png.h> not found.
+         This host has no libpng library.
+         Disabling support for PNG framebuffers.
+Checking for clock_nanosleep(0,0,NULL,NULL) in C library None... (cached) yes
+Checking for C header file valgrind/valgrind.h... (cached) yes
+Checking for pkg-config package hdf5-serial... (cached) no
+Checking for pkg-config package hdf5... (cached) no
+Checking for H5Fcreate("", 0, 0, 0) in C library hdf5... (cached) no
+Warning: Couldn't find HDF5 C++ libraries. Disabling HDF5 support.
+Checking for C header file linux/if_tun.h... (cached) yes
+Checking for backtrace_symbols_fd((void *)1, 0, 0) in C library None... (cached) yes
+Checking for pkg-config package protobuf... (cached) yes
+Checking for shm_open("/test", 0, 0) in C library None... (cached) yes
+Checking for C header file capstone/capstone.h... (cached) no
+Warning: Header file <capstone/capstone.h> not found.
+         This host has no capstone library installed.
+Checking for C header file linux/kvm.h... (cached) yes
+Checking for timer_create(CLOCK_MONOTONIC, NULL, NULL) in C library None... (cached) yes
+Checking for member exclude_host in struct perf_event_attr...(cached) yes
+Checking size of struct kvm_xsave ... (cached) yes
+Checking whether __i386__ is declared... (cached) no
+Checking whether __x86_64__ is declared... (cached) yes
+BUILD_TLM not set, not building CHI-TLM integration
+
+Checking for compiler -Wno-self-assign-overloaded support... (cached) yes
+Checking for linker -Wno-free-nonheap-object support... (cached) yes
+scons: done reading SConscript files.
+scons: Building targets ...
+ [     CXX] X86/base/Graphics.py.cc -> .do
+ [    LINK]  -> X86/gem5py_m5
+ [     CXX] src/base/atomicio.cc -> X86/base/atomicio.do
+ [     CXX] src/base/bitfield.cc -> X86/base/bitfield.do
+ [     CXX] src/base/channel_addr.cc -> X86/base/channel_addr.do
+ [     CXX] src/base/cprintf.cc -> X86/base/cprintf.do
+ [     CXX] src/base/debug.cc -> X86/base/debug.do
+ [     CXX] src/base/fenv.cc -> X86/base/fenv.do
+ [     CXX] src/base/fiber.cc -> X86/base/fiber.do
+ [     CXX] src/base/hostinfo.cc -> X86/base/hostinfo.do
+ [     CXX] src/base/inet.cc -> X86/base/inet.do
+ [     CXX] src/base/inifile.cc -> X86/base/inifile.do
+ [     CXX] src/base/logging.cc -> X86/base/logging.do
+ [     CXX] src/base/match.cc -> X86/base/match.do
+ [     CXX] src/base/output.cc -> X86/base/output.do
+ [     CXX] src/base/pollevent.cc -> X86/base/pollevent.do
+ [     CXX] src/base/random.cc -> X86/base/random.do
+ [     CXX] src/base/str.cc -> X86/base/str.do
+ [     CXX] src/base/time.cc -> X86/base/time.do
+ [     CXX] src/base/version.cc -> X86/base/version.do
+ [     CXX] src/base/temperature.cc -> X86/base/temperature.do
+ [     CXX] src/base/trace.cc -> X86/base/trace.do
+ [     CXX] src/base/types.cc -> X86/base/types.do
+ [     CXX] X86/debug/Annotate.cc -> .do
+ [     CXX] X86/debug/AnnotateQ.cc -> .do
+ [     CXX] X86/debug/AnnotateVerbose.cc -> .do
+ [     CXX] X86/debug/GDBAcc.cc -> .do
+ [     CXX] X86/debug/GDBExtra.cc -> .do
+ [     CXX] X86/debug/GDBMisc.cc -> .do
+ [     CXX] X86/debug/GDBRead.cc -> .do
+ [     CXX] X86/debug/GDBRecv.cc -> .do
+ [     CXX] X86/debug/GDBSend.cc -> .do
+ [     CXX] X86/debug/GDBWrite.cc -> .do
+ [     CXX] X86/debug/SQL.cc -> .do
+ [     CXX] X86/debug/Stats.cc -> .do
+ [     CXX] X86/debug/StatEvents.cc -> .do
+ [     CXX] X86/debug/GDBAll.cc -> .do
+ [     CXX] X86/debug/AnnotateAll.cc -> .do
+ [     CXX] X86/debug/FmtFlag.cc -> .do
+ [     CXX] X86/debug/FmtStackTrace.cc -> .do
+ [     CXX] X86/debug/FmtTicksOff.cc -> .do
+ [     CXX] src/base/loader/image_file_data.cc -> X86/base/loader/image_file_data.do
+ [     CXX] src/base/loader/symtab.cc -> X86/base/loader/symtab.do
+ [     CXX] src/base/stats/group.cc -> X86/base/stats/group.do
+ [     CXX] src/base/stats/info.cc -> X86/base/stats/info.do
+ [     CXX] src/base/stats/storage.cc -> X86/base/stats/storage.do
+ [     CXX] src/base/stats/text.cc -> X86/base/stats/text.do
+ [     CXX] X86/base/vnc/Vnc.py.cc -> .do
+ [     CXX] X86/debug/VNC.cc -> .do
+ [     CXX] X86/base/filters/BloomFilters.py.cc -> .do
+ [     CXX] src/kern/operatingsystem.cc -> X86/kern/operatingsystem.do
+ [     CXX] X86/debug/DebugPrintf.cc -> .do
+ [     CXX] X86/debug/Printf.cc -> .do
+ [     CXX] X86/python/gem5/__init__.py.cc -> .do
+ [     CXX] X86/python/gem5/coherence_protocol.py.cc -> .do
+ [     CXX] X86/python/gem5/isas.py.cc -> .do
+ [     CXX] X86/python/gem5/runtime.py.cc -> .do
+ [     CXX] X86/python/gem5/simulate/__init__.py.cc -> .do
+ [     CXX] X86/python/gem5/simulate/simulator.py.cc -> .do
+ [     CXX] X86/python/gem5/simulate/exit_event.py.cc -> .do
+ [     CXX] X86/python/gem5/simulate/exit_event_generators.py.cc -> .do
+ [     CXX] X86/python/gem5/components/__init__.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/__init__.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/abstract_board.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/abstract_system_board.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/mem_mode.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/riscv_board.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/experimental/__init__.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/experimental/lupv_board.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/simple_board.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/test_board.py.cc -> .do
+ [     CXX] X86/python/gem5/components/boards/x86_board.py.cc -> .do
+scons: *** [build/X86/python/gem5/components/boards/experimental/lupv_board.py.do] Build interrupted.
+scons: *** [build/X86/python/gem5/components/boards/riscv_board.py.do] Build interrupted.
+scons: *** [build/X86/python/gem5/components/boards/mem_mode.py.do] Build interrupted.
+scons: *** [build/X86/python/gem5/components/boards/x86_board.py.do] Build interrupted.
+scons: *** [build/X86/python/gem5/components/boards/simple_board.py.do] Build interrupted.
+scons: *** [build/X86/gem5py_m5] Build interrupted.
+scons: *** [build/X86/python/gem5/components/boards/test_board.py.do] Build interrupted.
+scons: *** [build/X86/python/gem5/components/boards/experimental/__init__.py.do] Build interrupted.
+scons: Build interrupted.
+scons: building terminated because of errors.
+scons: writing .sconsign file.
+*** Summary of Warnings ***
+Warning: Header file <png.h> not found.
+         This host has no libpng library.
+         Disabling support for PNG framebuffers.
+Warning: Couldn't find HDF5 C++ libraries. Disabling HDF5 support.
+Warning: Header file <capstone/capstone.h> not found.
+         This host has no capstone library installed.

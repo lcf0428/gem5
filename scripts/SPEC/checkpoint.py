@@ -153,7 +153,8 @@ RESULTS_DIR = "{}/gem5_results/SPEC/checkpoint/{}".format(HOME, operation_mode)
 SIMULATE_DIR = "{}/scripts/SPEC".format(GEM5_DIR)
 
 
-index_list = [16]
+index_list = [0, 1, 2, 3, 4, 9, 10, 16]
+# index_list = [0]
 
 # for i in range(len(programs)):
 # for i in range(2, 3):

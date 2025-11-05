@@ -153,7 +153,7 @@ BUILD_DIR = "{}/gem5_results/SPEC/build".format(HOME)
 RESULTS_DIR = "{}/gem5_results/SPEC/restore".format(HOME)
 SIMULATE_DIR = "{}/scripts/SPEC".format(GEM5_DIR)
 
-restore_list = [8]
+restore_list = [0, 1, 2, 3, 4, 9, 10, 16]
 
 # for i in range(len(programs)):
 # for i in range (2):
@@ -185,14 +185,14 @@ for i in restore_list:
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \
-                    --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
+                    --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/build/{}/simpoints --weight_file {}/gem5_results/SPEC/build/{}/weights.txt \
                     --checkpoint {} --warmup_interval 100000 --stdin_file {} --mem_operation_mode={} --tick_interval={} --options {} \
-                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, cur_input, operation_mode, tick_interval, arg, HOME, sim_out)
+                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, program, HOME, program, checkpoint, cur_input, operation_mode, tick_interval, arg, HOME, sim_out)
     else:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \
-                    --cmd ./{} --simpoint_interval 10000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
-                    --checkpoint {} --warmup_interval 10000 --mem_operation_mode={} --tick_interval={} --options {} \
-                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, operation_mode, tick_interval, arg, HOME, sim_out)
+                    --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/build/{}/simpoints --weight_file {}/gem5_results/SPEC/build/{}/weights.txt \
+                    --checkpoint {} --warmup_interval 100000 --mem_operation_mode={} --tick_interval={} --options {} \
+                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, program, HOME, program, checkpoint, operation_mode, tick_interval, arg, HOME, sim_out)
 
 
     print(gem5_cmd)

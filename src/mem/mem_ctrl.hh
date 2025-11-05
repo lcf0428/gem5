@@ -596,17 +596,19 @@ class MemCtrl : public qos::MemCtrl
 
     class MetaCache {
       public:
-        MetaCache(uint16_t cap = 64): _sz(0), _capacity(cap) {
+        MetaCache(uint16_t cap = 64): _sz(0), _capacity(cap){
           header = new ListNode(nullptr, nullptr);
           tailer = new ListNode(header, nullptr);
           header->succ = tailer;
         }
+        
+
 
         int getSize() {
           return _sz;
         }
 
-        std::vector<uint8_t> find(const Addr& addr) {
+        std::vector<uint8_t> find(const Addr& addr, bool needUpdate = true) {
           // printf("@mcache find: addr : 0x%lx\n", addr);
           // printf("@mcache hmap.size(): %ld\n", hmap.size());
           // for (auto kv: hmap) {
@@ -617,7 +619,9 @@ class MemCtrl : public qos::MemCtrl
             return res;
           }
           ListNode* cur = hmap[addr];
-          update(cur);
+          if (needUpdate) {
+            update(cur);
+          }
           return cur->cacheLine;
         }
 

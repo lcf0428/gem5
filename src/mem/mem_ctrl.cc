@@ -57,8 +57,10 @@
 namespace gem5
 {
 
+    unsigned long long access_cnt = 0;
+
     bool isAddressCovered(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x378d0;
+        // uintptr_t target_addr = 0x1d4d90;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -69,6 +71,18 @@ namespace gem5
         // }
         return false;
         // return true;
+
+        // if (access_cnt < 700000000) {
+        //     return false;
+        // } else if (access_cnt < 1350000000) {
+        //     // return true;
+        //     uintptr_t target_addr = 0x2183020;
+        //     pkt_size = 4096;
+        //     start_addr = (start_addr >> 12) << 12;
+        //     return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);  
+        // } else {
+        //     exit(1);
+        // }
     }
 
     bool coverageTestMC(Addr start_addr, Addr target_addr, size_t pkt_size) {
@@ -234,6 +248,7 @@ MemCtrl::init()
         startAddrForSecureMetaData = 0;
         Addr realStartAddr = ALIGN(startAddrForSecureMetaData + numPages * 8);
         uint64_t dramCapacity = ALIGN(dram->capacity() * (1024 * 1024) - 4095);
+        printf("=========\n\nthe realStartAddr is %d\n\n", realStartAddr);
         /* initially, all space is divided by large chunks */
         for (uint64_t addr = realStartAddr; addr < (dramCapacity - 4096); addr += 4096) {
             largeChunkList.emplace_back(addr);
@@ -258,7 +273,16 @@ MemCtrl::startup()
 
 void
 MemCtrl::serialize(gem5::CheckpointOut &cp) const {
-    SERIALIZE_CONTAINER(freeList);
+    if(operationMode == "secure"){
+        printf("when serialize \n");
+        printf("the size of largeChunkList is %d\n", largeChunkList.size());
+        printf("the size of smallChunkList is %d\n", smallChunkList.size());
+        SERIALIZE_CONTAINER(largeChunkList);
+        SERIALIZE_CONTAINER(smallChunkList);
+    } else {
+        SERIALIZE_CONTAINER(freeList);
+    }
+    
     // printf("when serialize, the pageNum is %ld\n", pageNum);
     SERIALIZE_SCALAR(pageNum);
     SERIALIZE_SCALAR(hasBuffered);
@@ -268,7 +292,17 @@ MemCtrl::serialize(gem5::CheckpointOut &cp) const {
 
 void
 MemCtrl::unserialize(gem5::CheckpointIn &cp) {
-    UNSERIALIZE_CONTAINER(freeList);
+
+    if(operationMode == "secure"){
+        UNSERIALIZE_CONTAINER(largeChunkList);
+        UNSERIALIZE_CONTAINER(smallChunkList);
+        printf("after unserialize \n");
+        printf("the size of largeChunkList is %d\n", largeChunkList.size());
+        printf("the size of smallChunkList is %d\n", smallChunkList.size());
+    } else {
+        UNSERIALIZE_CONTAINER(freeList);
+    }
+
     UNSERIALIZE_SCALAR(pageNum);
     UNSERIALIZE_SCALAR(hasBuffered);
     UNSERIALIZE_SCALAR(passedInterval);
@@ -304,6 +338,7 @@ MemCtrl::recvAtomic(PacketPtr pkt)
     }
 
     recordMemConsumption();
+    // access_cnt += 1;
 
     Tick res = 0;
     if (operationMode == "normal") {
@@ -340,7 +375,7 @@ MemCtrl::recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr)
     stat_page_used.insert(page_num);
 
     // do the actual memory access and turn the packet into a response
-    mem_intr->access(pkt);
+    mem_intr->access(pkt, access_cnt);
 
     if (pkt->hasData()) {
         // this value is not supposed to be accurate, just enough to
@@ -1388,7 +1423,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             // printf("the cache is full, evict a page first\n");
             /* evict an entry first */
             Addr evicted_page_mAddr = mcache.lastElemAddr();
-            std::vector<uint8_t> evicted_matedata_entry = mcache.find(evicted_page_mAddr);
+            std::vector<uint8_t> evicted_matedata_entry = mcache.find(evicted_page_mAddr, false);
             mcache.pop();
 
             PPN evicted_ppn = (evicted_page_mAddr - startAddrForSecureMetaData) / 8;
@@ -1403,6 +1438,14 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
                     printf("%lx ", evicted_matedata_entry[i]);
                 }
                 printf("\n");
+
+                printf("the maddr is 0x%lx\n", evicted_page_mAddr);
+
+                std::vector<uint8_t> mytest = mcache.find(evicted_page_mAddr);
+                printf("now read from metadata, should be invalid\n");
+                for (int i = 0; i < 8; i++) {
+                    printf("%02x ", mytest[i]);
+                }
             }
 
             /* read the evicted page */
@@ -1418,14 +1461,19 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
                 /* the page is compressible */
                 Addr new_chunk_addr = allocateChunkForSecure(0);
 
-                if (new_chunk_addr <= 0x1378d0 && new_chunk_addr + cPage.size() > 0x1378d0) {
-                    printf("the page is writting to a new space: address is 0x%lx\n", new_chunk_addr);
-                    for (int i = 0; i < cPage.size(); i++) {
-                        if (i % 8 == 0) {
-                            printf("\n");
-                        }
-                        printf("%lx ", cPage[i]);
-                    }
+                // if (new_chunk_addr <= 0x1378d0 && new_chunk_addr + cPage.size() > 0x1378d0) {
+                //     printf("the page is writting to a new space: address is 0x%lx\n", new_chunk_addr);
+                //     for (int i = 0; i < cPage.size(); i++) {
+                //         if (i % 8 == 0) {
+                //             printf("\n");
+                //         }
+                //         printf("%lx ", cPage[i]);
+                //     }
+                // }
+
+                if (isAddressCovered(evicted_phy_addr, 4096, 1)) {
+                    printf("the page is compressible\n");
+                    printf("allocate a new chunk is 0x%lx\n", new_chunk_addr);
                 }
 
                 mem_intr->atomicWrite(cPage, new_chunk_addr, cPage.size());
@@ -1504,6 +1552,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
             /* write the uncompressed page to a new place */
             Addr new_chunk_addr = allocateChunkForSecure(1);
+            recycleChunkForSecure(old_chunk_addr, 0);
 
             mem_intr->atomicWrite(origin_page, new_chunk_addr, 4096);
 
@@ -1534,7 +1583,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     auxPkt->configAsSecureAuxPkt(pkt, dram_addr, pkt->getSize());
 
     // do the actual memory access and turn the packet into a response
-    mem_intr->accessForSecure(auxPkt);
+    mem_intr->accessForSecure(auxPkt, access_cnt);
 
     delete auxPkt;
 
@@ -4670,7 +4719,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
             Addr victim_page_maddr = mcache.lastElemAddr();
             PPN victim_page_ppn = (victim_page_maddr - startAddrForSecureMetaData) / 8;
             assert(mcache.isExist(victim_page_maddr));
-            std::vector<uint8_t> metaData = mcache.find(victim_page_maddr);
+            std::vector<uint8_t> metaData = mcache.find(victim_page_maddr, false);
             mcache.pop();
             Addr dram_addr = parseMetaDataForSecure(metaData, 0);
 
@@ -5319,7 +5368,7 @@ MemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency,
     // response
     panic_if(!mem_intr->getAddrRange().contains(pkt->getAddr()),
              "Can't handle address range for packet %s\n", pkt->print());
-    mem_intr->access(pkt);
+    mem_intr->access(pkt, access_cnt);
 
     // turn packet around to go back to requestor if response expected
     if (needsResponse) {
@@ -6671,18 +6720,36 @@ Addr
 MemCtrl::allocateChunkForSecure(int chunk_type) {
     Addr chunk_addr = 0;
     if (chunk_type == 1) {
-        assert(largeChunkList.size() > 0);
+        if (largeChunkList.size() <= 0) {
+            printf("the largeChunkList size is %d\n", largeChunkList.size());
+            printf("the smallChunkList size is %d\n", smallChunkList.size());
+            panic("the largeChunkList run out of capacaity 0\n");
+        }
         chunk_addr = largeChunkList.front();
         largeChunkList.pop_front();
         stat_used_bytes += 4096;
+
+        std::vector<uint8_t> zero_page(4096, 0);
+        dram->atomicWrite(zero_page, chunk_addr, 4096);
     } else {
         if (smallChunkList.size() == 0) {
-            assert(largeChunkList.size() > 0);
+            if (largeChunkList.size() <= 0) {
+                printf("the largeChunkList size is %d\n", largeChunkList.size());
+                printf("the smallChunkList size is %d\n", smallChunkList.size());
+                panic("the largeChunkList run out of capacaity 1\n");
+            }
+
             chunk_addr = largeChunkList.front();
             largeChunkList.pop_front();
             smallChunkList.emplace_back(chunk_addr + 2048);
+        } else {
+            chunk_addr = smallChunkList.front();
+            smallChunkList.pop_front();
         }
         stat_used_bytes += 2048;
+
+        std::vector<uint8_t> zero_page(2048, 0);
+        dram->atomicWrite(zero_page, chunk_addr, 2048);
     }
     return chunk_addr;
 }
@@ -6755,7 +6822,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         pkt->setAddr(dram_addr);
 
-        mem_intr->accessForSecure(pkt);
+        mem_intr->accessForSecure(pkt, access_cnt);
 
         processPktListForSecure.remove(pkt);
 
@@ -7155,7 +7222,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         PacketPtr aux_pkt = readForCompress->preForSecure;
 
         std::unordered_map<PPN, std::vector<uint8_t>> metaDataMap = readForCompress->metaDataMapForSecure;
-
+        assert(aux_pkt->securePType == 0x1);
         assert(metaDataMap.size() == 1);
 
         auto iter = metaDataMap.begin();
@@ -7173,7 +7240,8 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         }
 
         Addr dram_addr = parseMetaDataForSecure(metaData, 0);
-        PacketPtr writeForCompress(aux_pkt);
+
+        PacketPtr writeForCompress = new Packet(aux_pkt);
         writeForCompress->configAsSecureWriteForCompress(aux_pkt, dram_addr, dataToWrite.data(), 4096);
 
         addToWriteQueueForSecure(writeForCompress, 64, mem_intr);
@@ -8165,6 +8233,7 @@ MemCtrl::CtrlStats::regStats()
 void
 MemCtrl::recvFunctional(PacketPtr pkt)
 {
+    // access_cnt += 1;
     recordMemConsumption();
     bool found = false;
     if (operationMode == "normal") {
@@ -8211,7 +8280,7 @@ MemCtrl::recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr)
     // printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
     if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
         // rely on the abstract memory
-        mem_intr->functionalAccess(pkt);
+        mem_intr->functionalAccess(pkt, access_cnt);
         return true;
     } else {
         return false;
@@ -9659,6 +9728,7 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     mem_intr->atomicRead(metaData.data(), mAddr, 8);
 
     Addr oldAddr = parseMetaDataForSecure(metaData, 0);
+    bool updateForRead = true;
 
     PacketPtr auxPkt = new Packet(pkt);
     auxPkt->configAsSecureAuxPkt(pkt, oldAddr, pkt->getSize());
@@ -9682,26 +9752,33 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
     if ((metaData[0] >> 6) & 0x1 == 1) {
         /* the page is compressed now */
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-            printf("Functional: the page is compressed now\n");
-        }
+
         uint64_t cPageSize = parseMetaDataForSecure(metaData, 1);
         std::vector<uint8_t> cPage(cPageSize);
         mem_intr->atomicRead(cPage.data(), oldAddr, cPageSize);
+
+        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
+            printf("Functional: the page is compressed now\n");
+            printf("the ppn is %d\n", ppn);
+            printf("oldAddr is 0x%lx\n", oldAddr);
+            printf("the cSize is %d\n", cPageSize);
+        }
 
         std::vector<uint8_t> dPage = decompressPage(cPage.data(), cPageSize);
         assert(dPage.size() == 4096);
 
         uint64_t ofs = pkt->getAddr() & ((0x1 << 12) - 1);
-        assert(ofs + pkt->getAddr() + pkt->getSize() <= 4096);
+        assert(ofs + pkt->getSize() <= 4096);
         if(pkt->isWrite()) {
             memcpy(dPage.data() + ofs, pkt->getPtr<uint8_t>(), pkt->getSize());
         } else {
             assert(pkt->isRead());
             memcpy(pkt->getPtr<uint8_t>(), dPage.data() + ofs, pkt->getSize());
+            updateForRead = false;
         }
 
         cPage = compressPage(dPage.data(), 4096);
+        cPageSize = cPage.size();
 
         if (cPage.size() <= 2048) {
             /* use the origin space */
@@ -9709,7 +9786,7 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             if (pkt->isWrite()) {
                 auxPkt->setSizeForMC(cPageSize);
                 auxPkt->allocateForMC();
-                memcpy(auxPkt->getPtr<uint8_t>(), cPage.data(), cPage.size());
+                memcpy(auxPkt->getPtr<uint8_t>(), cPage.data(), cPageSize);
                 auxPkt->setAddr(oldAddr);
             }
 
@@ -9769,9 +9846,11 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             printf("the dram addr is 0x%lx\n", auxPkt->getAddr());
         }
         
-        mem_intr->functionalAccessForSecure(auxPkt);
+        mem_intr->functionalAccessForSecure(auxPkt, access_cnt, updateForRead);
+        delete auxPkt;
         return true;
     } else {
+        delete auxPkt;
         return false;
     }
 
