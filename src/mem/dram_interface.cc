@@ -850,7 +850,7 @@ void DRAMInterface::atomicWrite(const std::vector<uint8_t>& data, Addr addr, siz
     //     }
     //     printf("\n");
     // }
-    
+
     // printf("@dram interface   atomic Write\n");
     assert(pmemAddr);
     uint8_t *host_addr = toHostAddr(addr);

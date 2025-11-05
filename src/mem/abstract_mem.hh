@@ -358,7 +358,7 @@ class AbstractMemory : public ClockedObject
     void accessForCompr(PacketPtr pkt, uint64_t burst_size, uint64_t pageNum, const Addr &pageBufferAddr);
 
     /*
-     * perform an untimed memory access specially for the new architecture 
+     * perform an untimed memory access specially for the new architecture
     */
     void accessForNew(PacketPtr pkt, uint8_t mode);
 

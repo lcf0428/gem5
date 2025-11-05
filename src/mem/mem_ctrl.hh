@@ -370,8 +370,8 @@ class MemCtrl : public qos::MemCtrl
 
     bool addToReadQueueForNew(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
-    
-    bool addToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, 
+
+    bool addToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
     /**
@@ -601,7 +601,7 @@ class MemCtrl : public qos::MemCtrl
           tailer = new ListNode(header, nullptr);
           header->succ = tailer;
         }
-        
+
 
 
         int getSize() {
@@ -858,7 +858,7 @@ class MemCtrl : public qos::MemCtrl
     /* ======= start for the new architecture ====== */
 
     uint64_t zeroAddr;
-    
+
     std::list<uint64_t> fineGrainedFreeList;
 
     std::vector<uint8_t> originMetaData;
@@ -874,7 +874,7 @@ class MemCtrl : public qos::MemCtrl
     uint32_t readBufferSizeForNew;
 
     uint32_t writeBufferSizeForNew;
-  
+
     std::list<std::pair<PacketPtr, uint8_t>> waitQueueForNew;
 
     std::list<PPN> overflowPages;
@@ -1320,9 +1320,9 @@ class MemCtrl : public qos::MemCtrl
     bool findSameElem(Addr addr);
     /* ====== end for DyLeCT ===== */
     /* ====== start for new ===== */
-    
+
     uint8_t new_getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
-    
+
     void new_setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type);
 
     uint8_t new_getCoverage(const std::vector<uint8_t>& metaData);
@@ -1375,7 +1375,7 @@ class MemCtrl : public qos::MemCtrl
 
     void afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr);
 
-    void updateMetaDataForInProcessPkt(bool isEligible, PPN ppn, const std::vector<uint8_t>& metaData); 
+    void updateMetaDataForInProcessPkt(bool isEligible, PPN ppn, const std::vector<uint8_t>& metaData);
 
     /* ===== end functinoality for secure ===== */
   };
