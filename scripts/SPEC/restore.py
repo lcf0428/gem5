@@ -141,7 +141,28 @@ tick_intervals = [
     2400000,
 ]
 
-
+recency_list_sizes = [
+#     0,
+    1256174,
+    3324,
+    42878,
+    51053,
+    27590,
+    1232714,
+    2611,
+    225,
+    2751166,
+    0, # bwaves ?
+    892346,
+    577706,
+    46355.4,
+#     0,
+#     0,
+    302402,
+    3469,
+    878, # fotonik3d ?
+    1853443
+]
 
 operation_mode = sys.argv[1]
 operation_mode = str(operation_mode)
@@ -182,17 +203,18 @@ for i in restore_list:
         exit(1)
 
     cur_input = stdin_file[i]
+    recency_list_size = recency_list_sizes[i]
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \
                     --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
-                    --checkpoint {} --warmup_interval 100000 --stdin_file {} --mem_operation_mode={} --tick_interval={} --options {} \
-                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, cur_input, operation_mode, tick_interval, arg, HOME, sim_out)
+                    --checkpoint {} --warmup_interval 100000 --stdin_file {} --mem_operation_mode={} --recency_list_size={} --tick_interval={} --options {} \
+                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, cur_input, operation_mode, recency_list_size, tick_interval, arg, HOME, sim_out)
     else:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \
-                    --cmd ./{} --simpoint_interval 10000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
-                    --checkpoint {} --warmup_interval 10000 --mem_operation_mode={} --tick_interval={} --options {} \
-                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, operation_mode, tick_interval, arg, HOME, sim_out)
+                    --cmd ./{} --simpoint_interval 1000000000  --simpoint_file {}/gem5_results/SPEC/build/nab/simpoints --weight_file {}/gem5_results/SPEC/build/nab/weights.txt \
+                    --checkpoint {} --warmup_interval 100000 --mem_operation_mode={} --recency_list_size={} --tick_interval={} --options {} \
+                    > {}/gem5_results/SPEC/restore/m5out/{} 2>&1 &".format(GEM5_DIR, gem5_out, GEM5_DIR, binary, HOME, HOME, checkpoint, operation_mode, recency_list_size, tick_interval, arg, HOME, sim_out)
 
 
     print(gem5_cmd)

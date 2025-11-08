@@ -108,6 +108,9 @@ parser.add_argument("--checkpoint", type=str, required=True, help="the target ch
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
                     help="Memory controller mode: normal, compresso, DyLeCT, new")
 
+parser.add_argument("--recency_list_size", type=int, default=0,
+                    help="the recency list size for DyLeCT mode")
+
 parser.add_argument("--tick_interval", type=int, default=10,
                     help="the interval between memory snapshots (x 10^7)")
 
@@ -165,6 +168,7 @@ cache_hierarchy = PrivateL1PrivateL2WalkCacheHierarchy(
 memory = SingleChannelDDR4_2400(size="20GiB")
 for ctrl in memory.mem_ctrl:
     ctrl.dram.enable_dram_powerdown = True
+    ctrl.recency_list_size = args.recency_list_size
     ctrl.operation_mode = args.mem_operation_mode
     ctrl.tick_interval = args.tick_interval
 
