@@ -850,14 +850,15 @@ void DRAMInterface::atomicWrite(const std::vector<uint8_t>& data, Addr addr, siz
     //     }
     //     printf("\n");
     // }
-    
+
     // printf("@dram interface   atomic Write\n");
     assert(pmemAddr);
     uint8_t *host_addr = toHostAddr(addr);
     // printf("@dram interface   0x%lx\n", (uint64_t) host_addr);
-    for (unsigned int i = 0; i < size; i++) {
-        host_addr[i] = data[base + i];
-    }
+    std::memcpy(host_addr, data.data() + base, size);
+    // for (unsigned int i = 0; i < size; i++) {
+    //     host_addr[i] = data[base + i];
+    // }
 }
 
 MemPacket*
