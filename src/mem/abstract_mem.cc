@@ -54,7 +54,7 @@ namespace gem5
 {
 
     bool isAddressCoveredForAM(uintptr_t start_addr, size_t pkt_size, int type, unsigned long long access_cnt = 0) {
-        // uintptr_t target_addr = 0x1d4d90;
+        // uintptr_t target_addr = 0xbe40;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -481,9 +481,9 @@ AbstractMemory::access(PacketPtr pkt, unsigned long long access_cnt)
         }
 
         if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0, access_cnt)) {
-            printf("Atomic read marker: ");
-            // printf("marker:%lx\n", pkt);
-            // printf("Timing read marker: ");
+            // printf("Atomic read marker: ");
+            printf("marker:%lx\n", pkt);
+            printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
             for (int ts = 0; ts < pkt->getSize(); ts++) {
                printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -511,9 +511,9 @@ AbstractMemory::access(PacketPtr pkt, unsigned long long access_cnt)
             if (pmemAddr) {
 
                 if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0, access_cnt)) {
-                    printf("Atomic write marker: ");
-                    // printf("marker:%lx\n", pkt);
-                    // printf("Timing write marker: ");
+                    // printf("Atomic write marker: ");
+                    printf("marker:%lx\n", pkt);
+                    printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
                     printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -1658,9 +1658,9 @@ AbstractMemory::accessForSecure(PacketPtr pkt, unsigned long long access_cnt) {
         }
 
         if (isAddressCoveredForAM(origin_pkt->getAddr(), origin_pkt->getSize(), 0, access_cnt)) {
-            printf("Atomic read marker: ");
-            // printf("marker:%lx\n", pkt);
-            // printf("Timing read marker: ");
+            // printf("Atomic read marker: ");
+            printf("marker:%lx\n", pkt);
+            printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
             for (int ts = 0; ts < pkt->getSize(); ts++) {
                printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -1688,9 +1688,9 @@ AbstractMemory::accessForSecure(PacketPtr pkt, unsigned long long access_cnt) {
             if (pmemAddr) {
 
                 if (isAddressCoveredForAM(origin_pkt->getAddr(), origin_pkt->getSize(), 0, access_cnt)) {
-                    printf("Atomic write marker: ");
-                    // printf("marker:%lx\n", pkt);
-                    // printf("Timing write marker: ");
+                    // printf("Atomic write marker: ");
+                    printf("marker:%lx\n", pkt);
+                    printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
                     printf("%02x ", static_cast<unsigned int>(start[ts]));

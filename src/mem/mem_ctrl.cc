@@ -60,7 +60,7 @@ namespace gem5
     unsigned long long access_cnt = 0;
 
     bool isAddressCovered(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x1d4d90;
+        // uintptr_t target_addr = 0xbe40;
         // pkt_size = 4096;
         // start_addr = (start_addr >> 12) << 12;
         // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
@@ -106,7 +106,7 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     respondEvent([this] {processRespondEvent(dram, respQueue,
                          respondEvent, retryRdReq); }, name()),
     dram(p.dram),
-    globalPredictor(0), mcache(MetaCache(64 * 64)),
+    globalPredictor(0), mcache(MetaCache(4)),
     curReadNum(0), curWriteNum(0), blockedNum(0),
     readBufferSizeForCompr(dram->readBufferSize),
     writeBufferSizeForCompr(dram->writeBufferSize),
@@ -253,6 +253,7 @@ MemCtrl::init()
         for (uint64_t addr = realStartAddr; addr < (dramCapacity - 4096); addr += 4096) {
             largeChunkList.emplace_back(addr);
         }
+        blockedQueueForSecure.clear();
     }
 }
 
@@ -4571,6 +4572,11 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
             stats.totGap += curTick() - prevArrival;
         }
         prevArrival = curTick();
+        // printf("\n=====================\n");
+        // printf("recv new pkt from outside world");
+        // printf("blockedForSecure? %d\n", blockedForSecure);
+        // printf("Timing-Req: request %s addr %#x size %d\n",
+        //     pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
 
     } else {
         assert(!blockedForSecure);
@@ -4647,14 +4653,12 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
     PacketPtr auxPkt = new Packet(pkt);
     auxPkt->configAsSecureAuxPkt(pkt, pkt->getAddr(), pkt->getSize());
 
-    if (!hasBlocked) {
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
-            printf("\n\n================\n\n");
-            printf("marker accept TimingReq: request %s addr %#x size %d\n",
-                pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
-            printf("%lx\n", auxPkt);
-            fflush(stdout);
-        }
+    if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
+        printf("\n\n================\n\n");
+        printf("marker accept TimingReq: request %s addr %#x size %d\n",
+            pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
+        printf("%lx\n", auxPkt);
+        fflush(stdout);
     }
 
     processPktListForSecure.emplace_back(auxPkt);
@@ -4724,9 +4728,13 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
             Addr dram_addr = parseMetaDataForSecure(metaData, 0);
 
             /* create a readForCompress pkt */
+            
+
             PacketPtr readForCompress = new Packet(auxPkt);
             readForCompress->configAsSecureReadForCompress(auxPkt, dram_addr, 4096);
             readForCompress->metaDataMapForSecure[victim_page_ppn] = metaData;
+
+            // printf("secure: create a readForCompress pkt: 0x%lx\n", readForCompress);
 
             pendingPktForSecure = readForCompress;
 
@@ -4742,6 +4750,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
             pendingPktForSecure = readMetaData;
 
             if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
+                printf("secure: create a readMetaData pkt: 0x%lx\n", readMetaData);
                 printf("the next pkt is readMetaData\n");
             }
         }
@@ -6826,7 +6835,6 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         processPktListForSecure.remove(pkt);
 
-
         assert(pktInProcess > 0);
         pktInProcess--;
         if (pktInProcess == 0 && blockedForSecure) {
@@ -6883,8 +6891,16 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         std::vector<uint8_t> metaDataEntry(64, 0);
         mem_intr->atomicRead(metaDataEntry.data(), pkt->getAddr(), pkt->getSize());
 
-        // printf("finish read the metadata\n");
-
+        PacketPtr origin_pkt = aux_pkt->preForSecure;
+        if (isAddressCovered(origin_pkt->getAddr(), origin_pkt->getSize(), 1)) {
+            printf("finish read the metadata\n");
+            printf("read metadata from memory is:\n ");
+            for (int i = 0; i < 8; i++) {
+                printf("%02x ", metaDataEntry[i]);
+            }
+            printf("\n");
+        }
+        
         if (metaDataEntry[0] < 0x80) {
             /* the metaData is not valid yet (this page is visited for the first time) */
             // printf("initial the metadata\n");
@@ -6960,12 +6976,15 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             printf("\n");
         }
 
-        metaData[0] = metaData[0] | (0x40);  // set the compressed bit to one
-        for (int i = 2; i >= 1; i--) {
-            metaData[i] = cSize & 0xFF;
-            cSize = cSize >> 8;
+        if (cSize <= 2048) {
+            metaData[0] = metaData[0] | (0x40);  // set the compressed bit to one
+            for (int i = 2; i >= 1; i--) {
+                metaData[i] = cSize & 0xFF;
+                cSize = cSize >> 8;
+            }        
+            assert(cSize == 0);
         }
-        assert(cSize == 0);
+        
         new_chunk_addr >>= 11;
 
         for (int i = 6; i >= 3; i--) {
@@ -6990,7 +7009,20 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         updateMetaDataForInProcessPkt(false, ppn, metaData);
 
         /* write the (un)compressed page to pkt's content */
-        memcpy(pkt->getPtr<uint8_t>(), cPage.data(), cPage.size());
+        if (cSize <= 2048) {
+            memcpy(pkt->getPtr<uint8_t>(), cPage.data(), cPage.size());
+        } else {
+            memcpy(pkt->getPtr<uint8_t>(), uPage.data(), 4096);
+        }
+        
+        if (isAddressCovered(ppn * 4096, 4096, 1)) {
+            uint8_t* test = pkt->getPtr<uint8_t>();
+            for (int i = 0; i < 8; i++) {
+
+                printf("%02x ", test[i + 0xe40]);
+            }
+            printf("\n");
+        }
 
         /* update the metadata in memory */
         Addr mAddr = startAddrForSecureMetaData + ppn * 8;
@@ -6999,6 +7031,8 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         /* create a readForWrite pkt */
         PacketPtr readForWrite = new Packet(pkt);
         readForWrite->configAsSecureReadForWrite(pkt, new_dram_addr, 2048);
+
+        // printf("secure: create readForWrite 0x%lx", readForWrite);
 
         if (!addToReadQueueForSecure(readForWrite, 32, mem_intr)) {
             if (!nextReqEvent.scheduled()) {
@@ -7029,6 +7063,8 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         Addr mAddr = startAddrForSecureMetaData + ppn * 8;
 
         readMetaDataForSecure->configAsSecureReadMetaData(auxPkt, mAddr, 64);
+        
+        // printf("secure: create readMetaData 0x%lx", readMetaDataForSecure);
 
         if (!addToReadQueueForSecure(readMetaDataForSecure, 1, dram)) {
             // If we are not already scheduled to get a request out of the
@@ -7108,6 +7144,14 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             }
 
             printf("\n");
+
+            printf("the dram address is 0x%lx\n", dram_addr);
+
+            for (int i = 0; i < 8; i++) {
+                printf("%02x ", origin_page[i + 0xe40]);
+            }
+
+            printf("\n");
         }
 
         /* update the new metadata for pkt */
@@ -7125,8 +7169,12 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
 
         PacketPtr writeForDecompress = new Packet(auxPkt);
+
+        
         writeForDecompress->configAsSecureWriteForDecompress(auxPkt, dram_addr, origin_page.data(), 4096);
         writeForDecompress->metaDataMapForSecure[ppn] = metaData;
+
+        // printf("secure: create writeForDecompress 0x%lx", writeForDecompress);
 
         delayByDecompressForSecure[writeForDecompress] = curTick() + decompress_latency;
 
@@ -7199,15 +7247,16 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             // for (int z = 0; z < blockedQueueForSecure.size(); z++) {
             //     printf("the %dth pkt is 0x%lx\n", z, pkt);
             // }
-            PacketPtr pkt = blockedQueueForSecure.front();
-            unsigned size = pkt->getSize();
+            PacketPtr blocked_pkt = blockedQueueForSecure.front();
+            unsigned blocked_size = blocked_pkt->getSize();
 
-            unsigned offset = pkt->getAddr() & (burst_size - 1);
-            unsigned int pkt_count = divCeil(offset + size, burst_size);
+            unsigned blocked_offset = blocked_pkt->getAddr() & (burst_size - 1);
+            unsigned int blocked_pkt_count = divCeil(blocked_offset + blocked_size, burst_size);
 
             blockedQueueForSecure.pop_front();
-            blockedNumForSecure -= pkt_count;
-            bool isAccepted = recvTimingReqLogicForSecure(pkt, true);
+            blockedNumForSecure -= blocked_pkt_count;
+
+            bool isAccepted = recvTimingReqLogicForSecure(blocked_pkt, true);
             assert(isAccepted);  // should be always accepted at this time
         }
 
@@ -7243,6 +7292,8 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         PacketPtr writeForCompress = new Packet(aux_pkt);
         writeForCompress->configAsSecureWriteForCompress(aux_pkt, dram_addr, dataToWrite.data(), 4096);
+
+        // printf("secure: create writeForCompress 0x%lx", writeForCompress);
 
         addToWriteQueueForSecure(writeForCompress, 64, mem_intr);
 
@@ -9748,6 +9799,14 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
         oldAddr = parseMetaDataForSecure(metaData, 0);
 
+    }
+
+    if (isAddressCovered(pkt->getAddr(), 8, 0)) {
+        printf("the metadata is \n");
+        for (int i = 0; i < 8; i++) {
+            printf("%02x ", metaData[i]);
+        }
+        printf("\n");
     }
 
     if ((metaData[0] >> 6) & 0x1 == 1) {
