@@ -106,7 +106,7 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     respondEvent([this] {processRespondEvent(dram, respQueue,
                          respondEvent, retryRdReq); }, name()),
     dram(p.dram),
-    globalPredictor(0), mcache(MetaCache(4)),
+    globalPredictor(0), mcache(MetaCache(32768)),
     curReadNum(0), curWriteNum(0), blockedNum(0),
     readBufferSizeForCompr(dram->readBufferSize),
     writeBufferSizeForCompr(dram->writeBufferSize),
@@ -3639,6 +3639,78 @@ MemCtrl::addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
                 panic("Fetal Error");
             }
             pagesInDecompress.erase(origin_ppn);
+            
+            // printf("the size of waitForDecompress is %d\n", waitForDeCompress.size());
+            std::vector<PacketPtr> pktToErase;
+            for(auto const& aux_pkt: waitForDeCompress) {
+                assert(aux_pkt->getAddr() == aux_pkt->DyLBackup);
+                PPN ppn = (aux_pkt->DyLBackup) >> 12;
+                if (ppn != origin_ppn) {
+                    continue;
+                } else {
+                    pktToErase.emplace_back(aux_pkt);
+                }
+                /* should be conflicted with pageInDecompress before otherwise the pkt should be already proceed when the writeForCompress is finished */
+                // uint8_t accessData[8];
+                // Addr cteAddr = startAddrForCTE + ppn * 8;
+                // dram->atomicRead(accessData, cteAddr, 8);
+                // uint64_t real_cte = 0;
+                // for (int i = 0; i < 8; i++) {
+                //     real_cte = (real_cte << 8) | (accessData[i] & 0xFF);
+                // }
+                // assert(((real_cte >> 62) & 0x1) ==  0);
+
+                bool sign = false;
+                unsigned size = aux_pkt->getSize();
+                uint32_t burst_size = dram->bytesPerBurst();
+
+                unsigned offset = aux_pkt->getAddr() & (burst_size - 1);
+                unsigned int pkt_count = divCeil(offset + size, burst_size);
+                // assert(pageInProcess.find(ppn) != pageInProcess.end());
+
+                /* don't need to decompress anymore */
+                if (aux_pkt->isWrite()) {
+                    Addr addr = pkt->getAddr();
+                    Addr realAddr = addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+                    aux_pkt->setAddr(realAddr);
+
+                    addToWriteQueueForDyL(aux_pkt, pkt_count, dram);
+                    stats.writeReqs++;
+                    stats.bytesWrittenSys += size;
+
+                    // If we are not already scheduled to get a request out of the
+                    // queue, do so now
+                    if (!sign) {
+                        if (!nextReqEvent.scheduled()) {
+                            DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
+                            schedule(nextReqEvent, curTick());
+                        }
+                    }
+                } else {
+                    assert(aux_pkt->isRead());
+                    Addr addr = pkt->getAddr();
+                    Addr realAddr = addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+                    aux_pkt->setAddr(realAddr);
+                    sign = addToReadQueueForDyL(aux_pkt, pkt_count, dram);
+                    stats.readReqs++;
+                    stats.bytesReadSys += size;
+
+                    if (!sign) {
+                        // If we are not already scheduled to get a request out of the
+                        // queue, do so now
+                        if (!nextReqEvent.scheduled()) {
+                            DPRINTF(MemCtrl, "Request scheduled immediately\n");
+                            schedule(nextReqEvent, curTick());
+                        }
+                    }
+                }
+            }
+
+
+            for (auto &pkt : pktToErase) {
+                waitForDeCompress.remove(pkt);
+            }
+            
             /* translate the dram address */
             Addr addr = pkt->getAddr();
             Addr real_addr = addr | (origin_pkt->getAddr() & ((1ULL << 12) - 1));
@@ -4351,7 +4423,7 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
             pkt->setBackUp(pkt->getAddr());
 
             if (pagesInDecompress.find(ppn) != pagesInDecompress.end()) {
-                panic("not implement yet[C1]");
+                // panic("not implement yet[C1]");
                 waitForDeCompress.push_back(auxPkt);
                 return true;
             }
@@ -4467,7 +4539,7 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
             expectReadQueueSize += pkt_count;
 
             if (pagesInDecompress.find(ppn) != pagesInDecompress.end()) {
-                panic("not implement yet[C2]");
+                // panic("not implement yet[C2]");
                 waitForDeCompress.push_back(auxPkt);
                 return true;
             }
@@ -6141,8 +6213,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             if (((cte >> 62) & 0x1) == 1) {
                 /* the current page is compressed */
                 if (pagesInDecompress.find(ppn) != pagesInDecompress.end()) {
-                    panic("not implement yet[C]");
-                    // waitForDeCompress.push_back(aux_pkt);
+                    // panic("not implement yet[C]");
+                    waitForDeCompress.push_back(aux_pkt);
                 } else {
                     bool sign = false;
                     if (isAddressCovered(aux_pkt->getAddr(), 8, 1)) {
@@ -6291,66 +6363,6 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         } else if (pktInProcess == 0 && blockedForDyL) {
             compressColdPage(pkt, mem_intr);
         }
-        // TODO: waitForDeCompress
-        // printf("the size of waitForDecompress is %d\n", waitForDeCompress.size());
-        // for(auto const& pkt: waitForDeCompress) {
-        //     assert(pkt->getAddr() == pkt->DyLBackup);
-        //     PPN ppn = (pkt->DyLBackup) >> 12;
-        //     /* should be conflicted with pageInDecompress before otherwise the pkt should be already proceed when the writeForCompress is finished */
-        //     uint8_t accessData[8];
-        //     Addr cteAddr = startAddrForCTE + ppn * 8;
-        //     dram->atomicRead(accessData, cteAddr, 8);
-        //     uint64_t real_cte = 0;
-        //     for (int i = 0; i < 8; i++) {
-        //         real_cte = (real_cte << 8) | (accessData[i] & 0xFF);
-        //     }
-        //     assert(((real_cte >> 62) & 0x1) ==  0);
-
-        //     bool sign = false;
-        //     unsigned size = pkt->getSize();
-        //     uint32_t burst_size = dram->bytesPerBurst();
-
-        //     unsigned offset = pkt->getAddr() & (burst_size - 1);
-        //     unsigned int pkt_count = divCeil(offset + size, burst_size);
-        //     // assert(pageInProcess.find(ppn) != pageInProcess.end());
-
-        //     /* don't need to decompress anymore */
-        //     if (pkt->isWrite()) {
-        //         Addr addr = ((real_cte >> 32) & ((1ULL << 30) - 1)) << 12;
-        //         Addr realAddr = addr | (pkt->getAddr() & ((1ULL << 12) - 1));
-        //         pkt->setAddr(realAddr);
-
-        //         addToWriteQueueForDyL(pkt, pkt_count, dram);
-        //         stats.writeReqs++;
-        //         stats.bytesWrittenSys += size;
-
-        //         // If we are not already scheduled to get a request out of the
-        //         // queue, do so now
-        //         if (!sign) {
-        //             if (!nextReqEvent.scheduled()) {
-        //                 DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
-        //                 schedule(nextReqEvent, curTick());
-        //             }
-        //         }
-        //     } else {
-        //         assert(pkt->isRead());
-        //         Addr addr = ((real_cte >> 32) & ((1ULL << 30) - 1)) << 12;
-        //         Addr realAddr = addr | (pkt->getAddr() & ((1ULL << 12) - 1));
-        //         pkt->setAddr(realAddr);
-        //         sign = addToReadQueueForDyL(pkt, pkt_count, dram);
-        //         stats.readReqs++;
-        //         stats.bytesReadSys += size;
-
-        //         if (!sign) {
-        //             // If we are not already scheduled to get a request out of the
-        //             // queue, do so now
-        //             if (!nextReqEvent.scheduled()) {
-        //                 DPRINTF(MemCtrl, "Request scheduled immediately\n");
-        //                 schedule(nextReqEvent, curTick());
-        //             }
-        //         }
-        //     }
-        // }
         // turn packet around to go back to requestor if response expected
         if (needsResponse) {
             // access already turned the packet into a response
@@ -7557,7 +7569,6 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         }
 
         if(mem_intr->readQueueSize == 0 && !delayForDecompress.empty()) {
-            assert(!next_req_event.scheduled());
             Tick targetTick = 0;
             for (const auto &kv: delayForDecompress) {
                 if (targetTick == 0) {
@@ -7566,8 +7577,11 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
                     targetTick = std::min(targetTick, kv.second);
                 }
             }
-            schedule(next_req_event, std::max(mem_intr->nextReqTime, targetTick));
-
+            
+            if (!next_req_event.scheduled()) {
+                schedule(next_req_event, std::max(mem_intr->nextReqTime, targetTick));
+            }
+            
             if (retry_wr_req && mem_intr->writeQueueSize < writeBufferSize) {
                 panic("retry enter?");
                 retry_wr_req = false;
