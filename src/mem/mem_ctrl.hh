@@ -835,7 +835,9 @@ class MemCtrl : public qos::MemCtrl
     uint64_t startAddrForPreGather;
     uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter
     uint64_t freeListThreshold;   // once the capacity of freeList is less than this threshold (e.g. 16MB), start to compress the page
-    uint64_t recencyListThreshold;  // once the size of recencyList exceed this threshold.
+
+    uint64_t recencyListThreshold;  // (deprecated later) once the size of recencyList exceed this threshold.
+    uint64_t memoryUsageThreshold;  // the memory upper bound
 
     std::vector<uint8_t> pageBufferForDyL;
     uint64_t decompress_latency;

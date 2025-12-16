@@ -152,7 +152,7 @@ recency_list_sizes = [
     2611,
     225,
     2751166,
-    0, # bwaves ?
+    2859201, # bwaves ?
     892346,
     577706,
     46355,
@@ -164,6 +164,30 @@ recency_list_sizes = [
     1853443
 ]
 
+small_recency_list_sizes = [
+#     0,
+    684623,
+    000,  # mcf
+    23106,
+    26231,
+    15749,
+    704405,
+    000,  # leela
+    000,  # exchange2
+    1572095,
+    1530496, # bwaves ?
+    # 141,
+    509912,
+    330117,
+    24810,  # wrf
+#     0,
+#     0,
+    112143,
+    1658,
+    000, # fotonik3d ?
+    1059110,
+]
+
 
 operation_mode = sys.argv[1]
 operation_mode = str(operation_mode)
@@ -172,12 +196,12 @@ HOME = "/local/home/liuche"
 BASE_DIR = f"{HOME}/SPEC"  # TODO: change the SPEC directory
 GEM5_DIR = f"{HOME}/gem5/gem5"  # TODO: change the gem5 directory
 BUILD_DIR = f"{HOME}/gem5_results/SPEC/build"
-RESULTS_DIR = f"{HOME}/gem5_results/SPEC/checkpoint/{operation_mode}"
+RESULTS_DIR = f"{HOME}/gem5_results/SPEC/checkpoint/{operation_mode}_small"
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
 
-index_list = [16]
-# index_list = [8]
+index_list = [2, 8, 16]
+# index_list = [9]
 
 # for i in range(len(programs)):
 # for i in range(2, 3):
@@ -193,10 +217,10 @@ for i in index_list:
     tick_interval = str(tick_intervals[i])
 
     gem5_out = f"{RESULTS_DIR}/{program}/"
-    sim_out = f"checkpoint_{operation_mode}.out"
+    sim_out = f"checkpoint_{operation_mode}_small.out"
     cur_input = stdin_file[i]
 
-    recency_list_size = recency_list_sizes[i]
+    recency_list_size = small_recency_list_sizes[i]
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-checkpoint-new.py \
