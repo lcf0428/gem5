@@ -23,7 +23,7 @@ parser.add_argument(
 parser.add_argument(
     "--tick_interval",
     type=int,
-    default=10,
+    default=100,
     help="the interval to take mem snapshots",
 )
 

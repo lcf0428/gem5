@@ -176,7 +176,6 @@ small_recency_list_sizes = [
     000,  # exchange2
     1572095,
     1530496, # bwaves ?
-    # 141,
     509912,
     330117,
     24810,  # wrf
@@ -186,6 +185,29 @@ small_recency_list_sizes = [
     1658,
     000, # fotonik3d ?
     1059110,
+]
+
+small_memory_capacity = [
+    # 0,
+    28042150,
+    000,  # mcf
+    946406,
+    1074414,
+    645071,
+    28852437,
+    000,  # leela
+    000,  # exchange2
+    64393020,
+    62689084,
+    20885996, # cactuBSSN
+    13521617,
+    1016218, # wrf
+    # 0,
+    # 0,
+    4593369,
+    67896,
+    000, # fotonik3d ?
+    43381162,
 ]
 
 
@@ -200,7 +222,7 @@ RESULTS_DIR = f"{HOME}/gem5_results/SPEC/checkpoint/{operation_mode}_small"
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
 
-index_list = [2, 8, 16]
+index_list = [8, 16]
 # index_list = [9]
 
 # for i in range(len(programs)):
@@ -220,7 +242,8 @@ for i in index_list:
     sim_out = f"checkpoint_{operation_mode}_small.out"
     cur_input = stdin_file[i]
 
-    recency_list_size = small_recency_list_sizes[i]
+    # recency_list_size = small_recency_list_sizes[i]
+    recency_list_size = small_memory_capacity[i]
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-checkpoint-new.py \
