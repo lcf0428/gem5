@@ -250,8 +250,10 @@ MemCtrl::init()
 
         uint64_t dramCapacity = (dram->capacity() * (1024 * 1024));
 
+        uint64_t realCapacity = std::min(dramCapacity, OSPACapacity);
+
         Addr addr = realStartAddr;
-        for (; addr < OSPACapacity; addr += 4096) {
+        for (; addr < realCapacity; addr += 4096) {
             freeList.emplace_back(addr);
         }
         printf("last addr: 0x%lx\n", addr - 4096);
