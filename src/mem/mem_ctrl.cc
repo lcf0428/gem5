@@ -952,11 +952,8 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     }
 
     if (incompressiblePages.find(ppn) != incompressiblePages.end()) {
-        // if(onePercentChance()) {
-        // printf("the page is incompressible\n");
-        // fflush(stdout);
-
-        if (fakeOnePercentChance()) {
+        if(onePercentChance()) {
+        // if (fakeOnePercentChance()) {
             // printf("enter one percent chance\n");
             // fflush(stdout);
 
@@ -1070,7 +1067,7 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             will stop when the memory usage fall back or recency list becomes empty
     */
 
-    while (stat_used_bytes > memoryUsageThreshold && recencyList.size() > 1) {
+    while (stat_used_bytes > memoryUsageThreshold && recencyList.size() > 256) {
         PPN coldPageId = recencyList.back();
         recencyList.pop_back();
         recencyMap.erase(coldPageId);
@@ -1111,7 +1108,7 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             continue;
         }
 
-        freeList.push_back(pagePtr);
+        freeList.emplace_back(pagePtr);
         // printf("Line %d, freeList push back 0x%lx\n", __LINE__, pagePtr);
         stat_used_bytes -= 4096;
             
@@ -9105,8 +9102,8 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     }
 
     if (incompressiblePages.find(ppn) != incompressiblePages.end()) {
-        if(fakeOnePercentChance()) {
-        // if(onePercentChance()) {
+        // if(fakeOnePercentChance()) {
+        if(onePercentChance()) {
             recencyList.push_front(ppn);
             recencyMap[ppn] = recencyList.begin();
             incompressiblePages.erase(ppn);
@@ -9203,7 +9200,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             will stop when the memory usage fall back or recency list becomes empty
     */
 
-    while (stat_used_bytes > memoryUsageThreshold && recencyList.size() > 1) {
+    while (stat_used_bytes > memoryUsageThreshold && recencyList.size() > 256) {
         PPN coldPageId = recencyList.back();
         recencyList.pop_back();
         recencyMap.erase(coldPageId);
