@@ -602,7 +602,10 @@ class MemCtrl : public qos::MemCtrl
           header->succ = tailer;
         }
 
-
+        void post_init(uint16_t new_cap = 64) {
+          /* should only be called right after the metacache is initialized */
+          _capacity = new_cap;
+        }
 
         int getSize() {
           return _sz;
