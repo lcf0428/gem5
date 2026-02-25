@@ -78,8 +78,8 @@ namespace gem5
         // } else {
         //     return false;
         // }
-        // return false;
-        return true;
+        return false;
+        // return true;
 
         // if (access_cnt < 700000000) {
         //     return false;
@@ -4872,6 +4872,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
 
     // check if the metadata cache hit
     std::vector<uint8_t> metaDataEntry = mcache.find(mAddr);
+    stats.numRdToMcache += 1;
     assert(metaDataEntry.size() == 64);
 
     std::vector<uint8_t> metaDataCandi(8, 0);
@@ -6967,6 +6968,14 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         mem_intr->accessForSecure(pkt, access_cnt);
 
+        unsigned int tranfer_bytes = pkt->getSize();
+        assert(origin_pkt->getSize() == tranfer_bytes);
+        if (pkt->isRead()) {
+            stats.memToCPUTotalBytes += tranfer_bytes;
+        } else {
+            stats.cpuToMemTotalBytes += tranfer_bytes;
+        }
+
         processPktListForSecure.remove(pkt);
 
         assert(pktInProcess > 0);
@@ -7025,6 +7034,9 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         std::vector<uint8_t> metaDataEntry(64, 0);
         mem_intr->atomicRead(metaDataEntry.data(), pkt->getAddr(), pkt->getSize());
 
+        stats.memToCPUMetaDataBytes += 8;
+        stats.memToCPUTotalBytes += 8;
+
         PacketPtr origin_pkt = aux_pkt->preForSecure;
         if (isAddressCovered(origin_pkt->getAddr(), origin_pkt->getSize(), 1)) {
             printf("finish read the metadata\n");
@@ -7046,6 +7058,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         PPN ppn = aux_pkt->getAddr() >> 12;
 
         mcache.add(pkt->getAddr(), metaDataEntry);
+        stats.numWrToMcache += 1;
 
         std::vector<uint8_t> metaData(8);
         memcpy(metaData.data(), metaDataEntry.data(), 8);
@@ -7079,6 +7092,10 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         assert(pkt->getSize() == 4096);
         std::vector<uint8_t> uPage(4096, 0);
         mem_intr->atomicRead(uPage.data(), pkt->getAddr(), pkt->getSize());
+
+        stats.memToCPUMigrationBytes += 4096;
+        stats.memToCPUTotalBytes += 4096;
+        stats.numWrToMigrationBuffer += 1;
 
         /* attempt to compress */
         std::vector<uint8_t> cPage = compressPage(uPage.data(), 4096);
@@ -7148,6 +7165,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         } else {
             memcpy(pkt->getPtr<uint8_t>(), uPage.data(), 4096);
         }
+        stats.numRdToMigrationBuffer += 1;
 
         if (isAddressCovered(ppn * 4096, 4096, 1)) {
             uint8_t* test = pkt->getPtr<uint8_t>();
@@ -7162,6 +7180,9 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         Addr mAddr = startAddrForSecureMetaData + ppn * 8;
         mem_intr->atomicWrite(metaData, mAddr, 8);
 
+        stats.cpuToMemMetaDataBytes += 8;
+        stats.cpuToMemTotalBytes += 8;
+        
         /* create a readForWrite pkt */
         PacketPtr readForWrite = new Packet(pkt);
         readForWrite->configAsSecureReadForWrite(pkt, new_dram_addr, 2048);
@@ -7187,6 +7208,8 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         /* write the "compressed" page to memory */
         mem_intr->atomicWrite(cPage, pkt->getAddr(), 4096);
+        stats.cpuToMemTotalBytes += 4096;
+        stats.cpuToMemMigrationBytes += 4096;
 
         /* cache miss. The MC should issue a packet to read the metadata */
         PacketPtr readMetaDataForSecure = new Packet(auxPkt);
@@ -7234,6 +7257,10 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             /* the page is uncompressed */
             mem_intr->atomicRead(origin_page.data(), pkt->getAddr(), 4096);
         }
+
+        stats.memToCPUMigrationBytes += 4096;
+        stats.memToCPUTotalBytes += 4096;
+        stats.numWrToMigrationBuffer += 1;
 
         /* update metadata */
 
@@ -7298,15 +7325,18 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         std::vector<uint8_t> metaDataEntry(64, 0);
         memcpy(metaDataEntry.data(), metaData.data(), 8);
         mcache.add(mAddr, metaDataEntry);
-
         mem_intr->atomicWrite(metaData, mAddr, 8);
 
+        stats.numWrToMcache += 1;
+        stats.cpuToMemMetaDataBytes += 8;
+        stats.cpuToMemTotalBytes += 8;
 
         PacketPtr writeForDecompress = new Packet(auxPkt);
 
-
         writeForDecompress->configAsSecureWriteForDecompress(auxPkt, dram_addr, origin_page.data(), 4096);
         writeForDecompress->metaDataMapForSecure[ppn] = metaData;
+
+        stats.numRdToMigrationBuffer += 1;
 
         // printf("secure: create writeForDecompress 0x%lx", writeForDecompress);
 
@@ -7327,6 +7357,9 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         std::vector<uint8_t> dPage(4096);
         memcpy(dPage.data(), pkt->getPtr<uint8_t>(), 4096);
         mem_intr->atomicWrite(dPage, pkt->getAddr(), 4096);
+
+        stats.cpuToMemMigrationBytes += 4096;
+        stats.cpuToMemTotalBytes += 4096;
 
         blockedForSecure = false;
 
@@ -7421,6 +7454,9 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
             mem_intr->atomicRead(dataToWrite.data() + 2048, pkt->getAddr(), 2048);
         }
+        stats.memToCPUMigrationBytes += 2048;
+        stats.memToCPUTotalBytes += 2048;
+        stats.numWrToMigrationBuffer += 1;
 
         Addr dram_addr = parseMetaDataForSecure(metaData, 0);
 
@@ -8330,9 +8366,9 @@ MemCtrl::CtrlStats::CtrlStats(MemCtrl &_ctrl)
     ADD_STAT(numWrToMcache, statistics::units::Count::get(),
              "the number of write bursts (8 bytes for each entry) to mcache"),
     ADD_STAT(numRdToMigrationBuffer, statistics::units::Count::get(),
-             "the number of read bursts (64 bytes per burst) to migration buffer"),
+             "the number of read bursts (4096 bytes per burst) to migration buffer"),
     ADD_STAT(numWrToMigrationBuffer, statistics::units::Count::get(),
-             "the number of read bursts (64 bytes per burst) to migration buffer")
+             "the number of read bursts (4096 bytes per burst) to migration buffer")
 {
 }
 
