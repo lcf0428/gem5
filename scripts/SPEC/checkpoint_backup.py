@@ -210,40 +210,20 @@ small_memory_capacity = [
     44681162,
 ]
 
-same_memory_capacity = [
-    # 0,
-    35337032, #gcc
-    000, # mcf
-    1269965,
-    1427088,
-    1229005,
-    36147733,
-    000,  # leela
-    000,  # exchange2
-    85392548,
-    81780511,
-    26416783,
-    000,  # lbm
-    1847624,
-    11305533,
-    164373,
-    54663557,
-]
-
 
 operation_mode = sys.argv[1]
 operation_mode = str(operation_mode)
 
-HOME = "/root"
-BASE_DIR = f"{HOME}/autodl-tmp/spec"  # TODO: change the SPEC directory
-GEM5_DIR = f"{HOME}/gem5"  # TODO: change the gem5 directory
-BUILD_DIR = f"{HOME}/autodl-tmp/gem5_results/SPEC/build"
-RESULTS_DIR = f"{HOME}/autodl-tmp/gem5_results/SPEC/checkpoint/{operation_mode}_same"
+HOME = "/local/home/liuche"
+BASE_DIR = f"{HOME}/SPEC"  # TODO: change the SPEC directory
+GEM5_DIR = f"{HOME}/gem5/gem5"  # TODO: change the gem5 directory
+BUILD_DIR = f"{HOME}/gem5_results/SPEC/build"
+RESULTS_DIR = f"{HOME}/gem5_results/SPEC/checkpoint/{operation_mode}_small"
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
 
-# index_list = [0, 2, 5]
-index_list = [9]
+index_list = [8, 16]
+# index_list = [9]
 
 # for i in range(len(programs)):
 # for i in range(2, 3):
@@ -263,7 +243,7 @@ for i in index_list:
     cur_input = stdin_file[i]
 
     # recency_list_size = small_recency_list_sizes[i]
-    recency_list_size = same_memory_capacity[i]
+    recency_list_size = small_memory_capacity[i]
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-checkpoint-new.py \

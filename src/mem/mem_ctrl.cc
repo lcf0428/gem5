@@ -78,8 +78,8 @@ namespace gem5
         // } else {
         //     return false;
         // }
-        return false;
-        // return true;
+        // return false;
+        return true;
 
         // if (access_cnt < 700000000) {
         //     return false;
@@ -266,9 +266,9 @@ MemCtrl::init()
         printf("last addr: 0x%lx\n", addr - 4096);
 
         freeListThreshold = (16 * 1024) / 4;  // set the threshold to be 16 MiB  <=>  the freelist should at least be (16 * 1024) / 4 length
-        recencyListThreshold = recencyListSize;  // to be compatible with the old implementation for DyLeCT timing mode
-        memoryUsageThreshold = static_cast<uint64_t>(recencyListSize) * 100;  // new implementation of DyLeCT (only for atomic and functional mode)
-
+        recencyListThreshold = recencyListSize;
+        memoryUsageThreshold = static_cast<uint64_t>(recencyListSize) * 100LL;
+        
         printf("Initial: the size of freeList is %ld\n", freeList.size());
         printf("Initial: the threshold of recency list is %lld\n", recencyListThreshold);
         printf("Initial: the threshold of memory usage is %lld\n", memoryUsageThreshold);
@@ -5580,6 +5580,11 @@ MemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency,
     panic_if(!mem_intr->getAddrRange().contains(pkt->getAddr()),
              "Can't handle address range for packet %s\n", pkt->print());
     mem_intr->access(pkt, access_cnt);
+    if (pkt->isRead()) {
+        stats.memToCPUTotalBytes += pkt->getSize();
+    } else {
+        stats.cpuToMemTotalBytes += pkt->getSize();
+    }
 
     // turn packet around to go back to requestor if response expected
     if (needsResponse) {
@@ -6237,7 +6242,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             }
 
 
-            assert(recencyList.size() <= recencyListThreshold);
+            // assert(recencyList.size() <= recencyListThreshold);
             blockedForDyL = false;
             if (pktInProcess == 0) {
                 for (const auto &pkt: functionalBlockedQueueForDyL) {
@@ -8125,9 +8130,11 @@ bool MemCtrl::compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_in
 
     // if (freeList.size() + potentialRecycle < freeListThreshold) {
     // if (freeList.size() + potentialRecycle < 64888) {
-    assert(recencyList.size() <= recencyListThreshold + 1);
+    // printf("recencyList.size() is %d\n", recencyList.size());
+    // printf("recencyListThreshold is %d\n", recencyListThreshold);
+    // assert(recencyList.size() <= recencyListThreshold + 1);
     // printf("recencyList.size() == %lld\n", recencyList.size());
-    fflush(stdout);
+    // fflush(stdout);
     if (recencyList.size() > recencyListThreshold) {
         // DPRINTF(MemCtrl, "Ohh, we actually have to compress a cold page\n");
         // DPRINTF(MemCtrl, "The freeList size is %lld, the threshold is %lld\n", freeList.size(), freeListThreshold);
@@ -8301,9 +8308,31 @@ MemCtrl::CtrlStats::CtrlStats(MemCtrl &_ctrl)
     ADD_STAT(requestorWriteAvgLat, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
              "Per-requestor write average memory access latency"),
-
     ADD_STAT(usedMemoryByte, statistics::units::Count::get(),
-             "record the usage of physical memory (in Byte)")
+             "record the usage of physical memory (in Byte)"),
+    // add stats for evaluation
+    // bandwidth
+    ADD_STAT(memToCPUTotalBytes, statistics::units::Count::get(),
+             "the number of bytes transferred from memory to CPU"),
+    ADD_STAT(cpuToMemTotalBytes, statistics::units::Count::get(),
+             "the number of bytes transferred from CPU to memory"),
+    ADD_STAT(memToCPUMigrationBytes, statistics::units::Count::get(),
+             "the number of bytes regarding page migration transferred from memory to CPU"),
+    ADD_STAT(cpuToMemMigrationBytes, statistics::units::Count::get(),
+             "the number of bytes regarding page migration transferred from CPU to memory"),
+    ADD_STAT(memToCPUMetaDataBytes, statistics::units::Count::get(),
+             "the number of transferred bytes due to the metadata reads"),
+    ADD_STAT(cpuToMemMetaDataBytes, statistics::units::Count::get(),
+             "the number of transferred bytes due to the metadata writes"),
+    // energy
+    ADD_STAT(numRdToMcache, statistics::units::Count::get(),
+             "the number of read bursts (8 bytes for each entry) to mcache"),
+    ADD_STAT(numWrToMcache, statistics::units::Count::get(),
+             "the number of write bursts (8 bytes for each entry) to mcache"),
+    ADD_STAT(numRdToMigrationBuffer, statistics::units::Count::get(),
+             "the number of read bursts (64 bytes per burst) to migration buffer"),
+    ADD_STAT(numWrToMigrationBuffer, statistics::units::Count::get(),
+             "the number of read bursts (64 bytes per burst) to migration buffer")
 {
 }
 

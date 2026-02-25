@@ -1049,6 +1049,25 @@ class MemCtrl : public qos::MemCtrl
 
         // record the memory consumption occasionally
         statistics::Vector usedMemoryByte;
+
+        // add stats for bandwidth/Energy/performance breakup
+        // For bandwidth
+        statistics::Scalar memToCPUTotalBytes;
+        statistics::Scalar cpuToMemTotalBytes;
+
+        statistics::Scalar memToCPUMigrationBytes;
+        statistics::Scalar cpuToMemMigrationBytes;
+
+        statistics::Scalar memToCPUMetaDataBytes;
+        statistics::Scalar cpuToMemMetaDataBytes;
+
+        // For energy
+        statistics::Scalar numRdToMcache;
+        statistics::Scalar numWrToMcache;
+        
+        statistics::Scalar numRdToMigrationBuffer;
+        statistics::Scalar numWrToMigrationBuffer;
+
     };
 
     CtrlStats stats;

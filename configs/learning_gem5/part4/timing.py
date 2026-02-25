@@ -76,10 +76,10 @@ thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
     "../../../",
-    # "tests/test-progs/hello/bin/x86/linux/hello",
+    "tests/test-progs/hello/bin/x86/linux/hello",
     # "tests/test-progs/threads/bin/x86/linux/threads",
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
-    "../../mibench/mibench/security/sha/sha",
+    # "../../mibench/mibench/security/sha/sha",
     # "../../Mibench/mibench/office/stringsearch/search_large",
     # "../../Mibench/mibench/network/dijkstra/dijkstra_small",
     # "../../Mibench/mibench/consumer/typeset/lout-3.24/lout",
@@ -90,9 +90,9 @@ system.workload = SEWorkload.init_compatible(binary)
 
 # 创建进程
 process = Process()
-process.cmd = [binary, "../../mibench/mibench/security/sha/input_large.asc"]
+# process.cmd = [binary, "../../mibench/mibench/security/sha/input_large.asc"]
 # process.cmd = [binary, "/local/home/liuche/Mibench/mibench/network/dijkstra/input.dat"]
-# process.cmd = [binary]
+process.cmd = [binary]
 # process.cmd = [binary, "/local/home/liuche/Mibench/mibench/automotive/qsort/input_large.dat"]
 system.cpu.workload = process
 system.cpu.createThreads()
