@@ -586,10 +586,11 @@ class Packet : public Printable, public Extensible<Packet>
         DyL_auxiliary               = 0x00000002,
         DyL_readCompressed          = 0x00000004,
         DyL_writeUncompressed       = 0x00000008,
-        DyL_readUncompressed        = 0x00000010,
-        DyL_writeCompressed         = 0x00000020,
+        DyL_readColdPage            = 0x00000010,
+        DyL_writeColdPage           = 0x00000020,
         DyL_readCTE                 = 0x00000040,
-        DyL_writeCTE                = 0x00000080
+        DyL_writeCTE                = 0x00000080,
+        DyL_functional              = 0x00000100
     };
 
     /// only used for the metadata read/write
@@ -1914,11 +1915,14 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p);
 
-    void configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId);
-
-    void configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page);
-
     void configAsWriteUncompress(const Addr &addr, PacketPtr p, std::vector<uint8_t>& page);
+
+    void configAsReadColdPage(const Addr& addr, uint64_t pageId);
+
+    void configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page);
+
+    // void configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId);
+    // void configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page);
 
     void configAsReadCTE(const Addr& addr, PacketPtr p);
 

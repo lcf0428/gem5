@@ -545,33 +545,6 @@ Packet::configAsReadCompress(const Addr& addr, uint64_t total_size, PacketPtr p)
 }
 
 void
-Packet::configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId)
-{
-    setAddr(addr);
-    setReadCmd();
-    setSizeForMC(4096);   // read the whole page (4kB)
-    setPayload(p);
-    allocateForMC();
-    setType(DyL_readUncompressed);
-    DyLStatus = 1;
-    compressPageId = pageId;
-}
-
-void
-Packet::configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page)
-{
-    setAddr(addr);
-    setWriteCmd();
-    setSizeForMC(total_size);
-    setPayload(p);
-    allocateForMC();
-    setType(DyL_writeCompressed);
-    for (unsigned int i = 0; i < total_size; i++) {
-        data[i] = page[i];
-    }
-}
-
-void
 Packet::configAsWriteUncompress(const Addr& addr, PacketPtr p, std::vector<uint8_t>& page) {
     setAddr(addr);
     setWriteCmd();
@@ -579,10 +552,59 @@ Packet::configAsWriteUncompress(const Addr& addr, PacketPtr p, std::vector<uint8
     setPayload(p);
     allocateForMC();
     setType(DyL_writeUncompressed);
-    for (unsigned int i = 0; i < 4096; i++) {
-        data[i] = page[i];
-    }
+    memcpy(data, page.data(), 4096);
 }
+
+void
+Packet::configAsReadColdPage(const Addr& addr, uint64_t pageId) {
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC(4096);   // read the whole page (4kB)
+    setPayload(nullptr);
+    allocateForMC();
+    setType(DyL_readColdPage);
+    DyLStatus = 1;
+    compressPageId = pageId;
+}
+
+void 
+Packet::configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page) {
+    setAddr(addr);
+    setWriteCmd();
+    setSizeForMC(page.size());
+    setPayload(nullptr);
+    allocateForMC();
+    setType(DyL_writeColdPage);
+    memcpy(data, page.data(), page.size());
+}
+
+
+// void
+// Packet::configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId)
+// {
+//     setAddr(addr);
+//     setReadCmd();
+//     setSizeForMC(4096);   // read the whole page (4kB)
+//     setPayload(p);
+//     allocateForMC();
+//     setType(DyL_readUncompressed);
+//     DyLStatus = 1;
+//     compressPageId = pageId;
+// }
+
+// void
+// Packet::configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page)
+// {
+//     setAddr(addr);
+//     setWriteCmd();
+//     setSizeForMC(total_size);
+//     setPayload(p);
+//     allocateForMC();
+//     setType(DyL_writeCompressed);
+//     for (unsigned int i = 0; i < total_size; i++) {
+//         data[i] = page[i];
+//     }
+// }
 
 void
 Packet::configAsReadCTE(const Addr& addr, PacketPtr p) {

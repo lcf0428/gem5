@@ -53,6 +53,7 @@
 #include <vector>
 #include <zlib.h>
 #include <algorithm>
+#include <set>
 
 #include "base/callback.hh"
 #include "base/statistics.hh"
@@ -796,72 +797,227 @@ class MemCtrl : public qos::MemCtrl
 
     std::vector<PacketPtr> to_add_pkt;
 
-    /* necessary variables for dyLeCT */
-    bool blockedForDyL;
+    /* necessary variables for dyLeCT (old) */
 
-    bool functionalBlockedForDyL;
+    // bool functionalBlockedForDyL;
+
+    // std::list<PacketPtr> functionalBlockedQueueForDyL;
+
+    // std::unordered_map<PacketPtr, Tick> delayForDecompress;
+
+    // std::unordered_set<PPN> pageInProcess;
+
+    // std::unordered_set<PPN> pagesInDecompress;
+
+    // std::unordered_set<PPN> pagesInCompress;
+
+    // std::list<PacketPtr> waitForDeCompress;
+
+    // uint8_t accessCnt; //  Once every 100 memory requests, update the recencyList. Then reset the accessCnt
+
+    // uint8_t potentialRecycle;
+
+    // uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter
+    // uint64_t freeListThreshold;   // once the capacity of freeList is less than this threshold (e.g. 16MB), start to compress the page
+
+    // uint64_t recencyListThreshold;  // (deprecated later) once the size of recencyList exceed this threshold.
+
+    // std::vector<uint8_t> pageBufferForDyL;
+
+    // void timingAccessForDyL(PacketPtr pkt, MemInterface* mem_intr);
+
+    /* ======= end for dyLeCT ======= */
+
+    /* ======= start for DyLeCT architecture ====== */
+
+    uint64_t expectReadQueueSize;
+    uint64_t expectWriteQueueSize;
+
+    Tick recvLastPkt;
+
+    class BlockInfo {
+      public:
+        std::unordered_map<PPN, uint32_t> pageTrack;
+        uint8_t numPagesInUse;
+        
+        BlockInfo(): numPagesInUse(0) {}
+    };
+
+    std::unordered_map<uint64_t, BlockInfo> blockInfoForDyL;
+
+    struct AccessCntInfo {
+      uint64_t PPN;
+      uint32_t accessCnt;
+    };
+    
+    class PageGroupInfo {
+      // at most three DRAM pages in ML0 per DRAM page group
+      // DRAMPage(p) = hash(p) + p′s short CTE
+      // hash(p)=G∗(p%(M/G))
+      // M: total # DRAM pages
+      // G: short CTE's DRAM page group size = 3
+      // p: os page number (i.e. PPN)
+      public:
+
+        PageGroupInfo(uint64_t addr = 0): baseAddr(addr) {}
+
+        std::unordered_map<uint8_t, AccessCntInfo> osPagesInML0;
+
+        uint64_t baseAddr;
+
+        void updateAccessCntForML0(uint64_t PPN) {
+          bool find_target_page = false;
+          for (auto &pair: osPagesInML0) {
+            if (pair.second.PPN == PPN) {
+              find_target_page = true;
+              pair.second.accessCnt += 1;
+            }
+          }
+          if (!find_target_page) {
+            panic("could not find target page in ML0");
+          }
+        }
+
+        void updateAccessCnt(uint64_t PPN) {
+          uint32_t access_cnt = 0;
+          if (_pos.count(PPN)) {
+            access_cnt = _pos[PPN]->accessCnt;
+            _s.erase(_pos[PPN]);
+          }
+
+          access_cnt += 1;
+          auto it = _s.insert(AccessCntInfo{PPN, access_cnt}).first;
+          _pos[PPN] = it;
+        }
+
+        bool isEmpty() {
+          return _s.empty();
+        }
+
+        auto getMax() {
+          return *_s.begin();
+        }
+
+        void removePage(uint64_t PPN) {
+          if (_pos.count(PPN)) {
+            _s.erase(_pos[PPN]);
+            _pos.erase(PPN);
+          }
+        }
+
+        bool OSPageInML0() {
+          return numOSPageInML0 != 0;
+        }
+
+        uint8_t getVictimPageLoc() {
+          if (numOSPageInML0 < 3) {
+            panic("the number of OS page in ML0 is less than 3 (not full) for current page group");
+          }
+
+          if (osPagesInML0.count(0) == 0) {
+            panic("There should be one page in offset 0 when ML0 is full");
+          }
+          
+          uint32_t accessCnt = osPagesInML0[0].accessCnt;
+          uint8_t pos = 0;
+          
+          for (const auto& pair: osPagesInML0) {
+            if (pair.second.accessCnt < accessCnt) {
+              accessCnt = pair.second.accessCnt;
+              pos = pair.first;
+            }
+          }
+          return pos;
+        }
+
+        inline uint64_t getVictimPageNum(uint8_t loc) {
+          return osPagesInML0[loc].PPN;
+        }
+
+        uint32_t getAccessCnt(uint64_t PPN) {
+            if (_pos.count(PPN)) {
+                return _pos[PPN]->accessCnt;
+            }
+            for (auto &pair: osPagesInML0) {
+                if (pair.second.PPN == PPN) {
+                    return pair.second.accessCnt;
+                }
+            }
+            panic("could not find target PPN %d in current page group", PPN);
+        }
+
+        void addNewOSPageToML0(uint8_t pos, uint64_t PPN, uint32_t accessCnt) {
+          if (osPagesInML0.count(pos) == 0) {
+            numOSPageInML0 += 1;
+          }
+          osPagesInML0[pos] = AccessCntInfo{PPN, accessCnt};
+        }
+
+      private:
+        struct Cmp {
+            bool operator()(const AccessCntInfo& a, const AccessCntInfo& b) const {
+                if (a.accessCnt != b.accessCnt) return a.accessCnt > b.accessCnt; // y 大的“更小”，排前面
+                return a.PPN < b.PPN;
+            }
+        };
+
+        std::set<AccessCntInfo, Cmp> _s;
+
+        std::unordered_map<uint64_t, std::set<AccessCntInfo, Cmp>::iterator> _pos;
+        
+        uint8_t numOSPageInML0;
+    };
+
+    std::vector<PageGroupInfo> pageGroups;
+
+    std::list<PPN> recencyList;                 // use the PPN to refer to a certain page (page id)
+    std::unordered_map<PPN, std::list<PPN>::iterator> recencyMap;
+
+    /* 
+      collection of in processing pkts (including functional and timing pkts)
+      In a timing order
+    */
+    std::list<PacketPtr> inProcessPkts;
+
+    uint64_t decompress_latency;
+    uint64_t compress_latency;
+    
+    uint64_t thresholdForPromotion;
+
+    std::unordered_set<PPN> incompressiblePages;
+    std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
+    std::list<uint64_t> moderateFreeList;       // the free list for the 1024B memory block
+    std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block
+
+    uint64_t memoryUsageThreshold;  // the memory upper bound
+
+    uint64_t startAddrForCTE;
+    uint64_t startAddrForPreGather;
+
+    // std::unordered_set<PPN> pagesInDecompress;
+    // std::list<PacketPtr> waitForDeCompress;
+
+    std::pair<PacketPtr, Tick> waitForDecompress;
+    
+    std::unordered_map<PacketPtr, std::vector<uint8_t>> decompressedPage;
+
+    std::pair<PPN, bool> pageInCompress;
+
+    bool compressColdPageInProcess;
+
+    uint64_t page_group_num;
 
     uint32_t blockedNumForDyL;
 
     std::list<PacketPtr> blockedQueueForDyL;
 
-    std::list<PacketPtr> functionalBlockedQueueForDyL;
+    bool blockedForDyL;
 
-    std::unordered_map<PacketPtr, Tick> delayForDecompress;
-
-    std::unordered_map<PacketPtr, std::vector<uint8_t>> decompressedPage;
-
-    std::list<PacketPtr> inProcessWritePkt;
-
-    uint64_t pktInProcess;
-
-    std::unordered_set<PPN> pageInProcess;
-
-    std::unordered_set<PPN> pagesInDecompress;
-
-    std::unordered_set<PPN> pagesInCompress;
-
-    std::list<PacketPtr> waitForDeCompress;
-
-    uint8_t accessCnt; //  Once every 100 memory requests, update the recencyList. Then reset the accessCnt
-
-    uint8_t potentialRecycle;
-
-    std::unordered_map<PPN, std::list<PPN>::iterator> recencyMap;
-
-    std::list<PPN> recencyList;                 // use the PPN to refer to a certain page (page id)
-    std::unordered_set<PPN> incompressiblePages;
-    std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
-    std::list<uint64_t> moderateFreeList;       // the free list for the 1024B memory block
-    std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block
-    uint64_t startAddrForCTE;
-    uint64_t startAddrForPreGather;
-    uint64_t startAddrForCnt;    // use 8-bit deterministic counter per page instead of 5 bit probabilistic counter
-    uint64_t freeListThreshold;   // once the capacity of freeList is less than this threshold (e.g. 16MB), start to compress the page
-
-    uint64_t recencyListThreshold;  // (deprecated later) once the size of recencyList exceed this threshold.
-    uint64_t memoryUsageThreshold;  // the memory upper bound
-
-    std::vector<uint8_t> pageBufferForDyL;
-    uint64_t decompress_latency;
-    uint64_t compress_latency;
-
-    uint64_t expectReadQueueSize;
-    uint64_t expectWriteQueueSize;
-
-    std::vector<uint8_t> compressPage(const uint8_t* inputData, size_t inputSize);
-
-    std::vector<uint8_t> decompressPage(const uint8_t* compresseData, size_t compressedSize);
-
-    bool compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_intr);
-
-    void timingAccessForDyL(PacketPtr pkt, MemInterface* mem_intr);
-
-    Tick recvLastPkt;
-
-    /* ======= end for dyLeCT ======= */
+    /* ======= end for DyLeCT ======= */
 
     /* ======= start for the new architecture ====== */
+
+    std::list<PacketPtr> inProcessWritePkt;
 
     uint64_t zeroAddr;
 
@@ -888,6 +1044,8 @@ class MemCtrl : public qos::MemCtrl
     /* ====== end for the new architecture ======*/
 
     /* ===== start for secure architecture ====== */
+
+    uint64_t pktInProcess;
 
     std::list<PacketPtr> processPktListForSecure;
 
@@ -1343,6 +1501,38 @@ class MemCtrl : public qos::MemCtrl
     void afterDecompForDyL(PacketPtr pkt, MemInterface* mem_intr);
 
     bool findSameElem(Addr addr);
+
+    bool isValidCTE(const std::vector<uint8_t>& cte, uint32_t ofs, bool isPreGather);
+
+    void updateRecencyList(uint64_t ppn);
+
+    /*
+      mode = 1: unifiedCTE
+      mode = 2: Pre-gathered
+    */
+    std::pair<Addr, uint32_t> parsePageInfoForDyL(const std::vector<uint8_t>& cteBlock, uint32_t ofs, uint8_t mode, PPN ppn = 0);
+
+    void addSubPktToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
+
+    bool addSubPktToReadQueueForDyL(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
+
+    void updateCTEForDyL(uint64_t ppn, Addr page_dram_addr, MemInterface* mem_intr, uint32_t compressed_size = 0);
+
+    void updatePreGatherForDyL(uint64_t ppn, MemInterface* mem_intr, uint8_t loc = 4);
+
+    void updateMetaDataForDyL(uint64_t ppn, Addr page_dram_addr, uint8_t page_level, MemInterface* mem_intr, uint32_t compressed_size = 0, uint8_t loc = 4);
+
+    void updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr);
+
+    void tryDeletePktForDyL(PacketPtr pkt);
+
+    bool isOverlapped(Addr addr1, unsigned int size1, Addr addr2, unsigned int size2);
+
+    std::vector<uint8_t> compressPage(const uint8_t* inputData, size_t inputSize);
+
+    std::vector<uint8_t> decompressPage(const uint8_t* compresseData, size_t compressedSize);
+
+    bool compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_intr);
     /* ====== end for DyLeCT ===== */
     /* ====== start for new ===== */
 
