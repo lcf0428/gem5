@@ -73,6 +73,20 @@ namespace gem5
 namespace o3
 {
 
+const char *CommitCycleStateNames[Commit::CycleStateMax] = {
+    "CommitSuccess",
+    "Squash",
+    "LoadStall",
+    "StoreStall",
+    "LoadOrder",
+    "StoreOrder",
+    "ROBEmpty",
+    "MemBarrier",
+    "WriteBarrier",
+    "InstructionFault",
+    "NoThreadReady"
+};
+
 void
 Commit::processTrapEvent(ThreadID tid)
 {
@@ -96,6 +110,7 @@ Commit::Commit(CPU *_cpu, const BaseO3CPUParams &params)
       trapLatency(params.trapLatency),
       canHandleInterrupts(true),
       avoidQuiesceLiveLock(false),
+      cycleState(NoThreadReady),
       stats(_cpu, this)
 {
     if (commitWidth > MaxWidth)
@@ -165,7 +180,11 @@ Commit::CommitStats::CommitStats(CPU *cpu, Commit *commit)
       ADD_STAT(committedInstType, statistics::units::Count::get(),
                "Class of committed instruction"),
       ADD_STAT(commitEligibleSamples, statistics::units::Cycle::get(),
-               "number cycles where commit BW limit reached")
+               "number cycles where commit BW limit reached"),
+      ADD_STAT(cycleStateBreakdown, statistics::units::Cycle::get(),
+               "Breakdown of commit-stage cycle states"),
+      ADD_STAT(cycleStateCycles, statistics::units::Cycle::get(),
+               "Total number of commit-stage cycles classified")     
 {
     using namespace statistics;
 
@@ -194,6 +213,14 @@ Commit::CommitStats::CommitStats(CPU *cpu, Commit *commit)
         .flags(total | pdf | dist);
 
     committedInstType.ysubnames(enums::OpClassStrings);
+
+    
+    cycleStateBreakdown
+        .init(Commit::CycleStateMax)
+        .flags(total);
+    for (int i = 0; i < Commit::CycleStateMax; ++i) {
+        cycleStateBreakdown.subname(i, CommitCycleStateNames[i]);
+    }
 }
 
 void
@@ -582,9 +609,14 @@ Commit::tick()
 {
     wroteToTimeBuffer = false;
     _nextStatus = Inactive;
+    cycleState = NoThreadReady;
 
-    if (activeThreads->empty())
+
+    if (activeThreads->empty()) {
+        stats.cycleStateBreakdown[cycleState]++;
+        stats.cycleStateCycles++;
         return;
+    }
 
     std::list<ThreadID>::iterator threads = activeThreads->begin();
     std::list<ThreadID>::iterator end = activeThreads->end();
@@ -651,6 +683,9 @@ Commit::tick()
         DPRINTF(Activity, "Activity This Cycle.\n");
         cpu->activityThisCycle();
     }
+
+    stats.cycleStateBreakdown[cycleState]++;
+    stats.cycleStateCycles++;
 
     updateStatus();
 }
@@ -756,6 +791,7 @@ Commit::commit()
         // both, that's a bad sign.
         if (trapSquash[tid]) {
             assert(!tcSquash[tid]);
+            cycleState = Squash;
             squashFromTrap(tid);
 
             // If the thread is trying to exit (i.e., an exit syscall was
@@ -766,11 +802,13 @@ Commit::commit()
                 cpu->scheduleThreadExitEvent(tid);
         } else if (tcSquash[tid]) {
             assert(commitStatus[tid] != TrapPending);
+            cycleState = Squash;
             squashFromTC(tid);
         } else if (commitStatus[tid] == SquashAfterPending) {
             // A squash from the previous cycle of the commit stage (i.e.,
             // commitInsts() called squashAfter) is pending. Squash the
             // thread now.
+            cycleState = Squash;
             squashFromSquashAfter(tid);
         }
 
@@ -780,6 +818,7 @@ Commit::commit()
         if (fromIEW->squash[tid] &&
             commitStatus[tid] != TrapPending &&
             fromIEW->squashedSeqNum[tid] <= youngestSeqNum[tid]) {
+            cycleState = Squash;
 
             if (fromIEW->mispredictInst[tid]) {
                 DPRINTF(Commit,
@@ -839,6 +878,7 @@ Commit::commit()
         }
 
         if (commitStatus[tid] == ROBSquashing) {
+            cycleState = Squash;
             num_squashing_threads++;
         }
     }
@@ -936,8 +976,50 @@ Commit::commitInsts()
 
         // ThreadID commit_thread = getCommittingThread();
 
-        if (commit_thread == -1 || !rob->isHeadReady(commit_thread))
+        // if (commit_thread == -1 || !rob->isHeadReady(commit_thread))
+        if (commit_thread == InvalidThreadID) {
+            bool found_eligible_thread = false;
+            bool found_non_empty_thread = false;
+
+            for (ThreadID tid : *activeThreads) {
+                if (!isCommitThreadReady(tid)) {
+                    continue;
+                }
+
+                found_eligible_thread = true;
+
+                if (rob->isEmpty(tid)) {
+                    continue;
+                }
+
+                found_non_empty_thread = true;
+                if (cycleState != Squash) {
+                    cycleState = classifyStall(rob->readHeadInst(tid));
+                }
+                break;
+            }
+
+            if (cycleState == NoThreadReady && found_eligible_thread &&
+                !found_non_empty_thread) {
+                cycleState = ROBEmpty;
+            }
             break;
+        }
+
+        if (rob->isEmpty(commit_thread)) {
+            if (cycleState != Squash) {
+                cycleState = ROBEmpty;
+            }
+            break;
+        }
+
+        if (!rob->isHeadReady(commit_thread)) {
+            if (cycleState != Squash) {
+                cycleState = classifyStall(rob->readHeadInst(commit_thread));
+            }
+            break;
+        }
+
 
         head_inst = rob->readHeadInst(commit_thread);
 
@@ -952,6 +1034,7 @@ Commit::commitInsts()
         // If the head instruction is squashed, it is ready to retire
         // (be removed from the ROB) at any time.
         if (head_inst->isSquashed()) {
+            cycleState = Squash;
 
             DPRINTF(Commit, "Retiring squashed instruction from "
                     "ROB.\n");
@@ -979,10 +1062,11 @@ Commit::commitInsts()
             set(pc[tid], head_inst->pcState());
 
             // Try to commit the head instruction.
-            bool commit_success = commitHead(head_inst, num_committed);
+            CycleState commit_result = commitHead(head_inst, num_committed);
 
-            if (commit_success) {
+            if (commit_result == CommitSuccess) {
                 ++num_committed;
+                cycleState = CommitSuccess;
                 cpu->commitStats[tid]
                     ->committedInstType[head_inst->opClass()]++;
                 stats.committedInstType[tid][head_inst->opClass()]++;
@@ -1089,6 +1173,9 @@ Commit::commitInsts()
                     onInstBoundary && cpu->checkInterrupts(0))
                     squashAfter(tid, head_inst);
             } else {
+                if (cycleState != Squash) {
+                    cycleState = commit_result;
+                }
                 DPRINTF(Commit, "Unable to commit head instruction PC:%s "
                         "[tid:%i] [sn:%llu].\n",
                         head_inst->pcState(), tid ,head_inst->seqNum);
@@ -1105,7 +1192,37 @@ Commit::commitInsts()
     }
 }
 
+Commit::CycleState
+Commit::classifyStall(const DynInstPtr &head_inst) const
+{
+    assert(head_inst);
+
+    if (head_inst->isWriteBarrier()) {
+        return WriteBarrier;
+    }
+    if (head_inst->isReadBarrier() || head_inst->isFullMemBarrier()) {
+        return MemBarrier;
+    }
+    if (head_inst->isLoad()) {
+        return LoadStall;
+    }
+    if (head_inst->isStore() || head_inst->isAtomic()) {
+        return StoreStall;
+    }
+
+    return StoreStall;
+}
+
 bool
+Commit::isCommitThreadReady(ThreadID tid) const
+{
+    return commitStatus[tid] == Running ||
+           commitStatus[tid] == Idle ||
+           commitStatus[tid] == FetchTrapPending;
+}
+
+
+Commit::CycleState
 Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
 {
     assert(head_inst);
@@ -1133,7 +1250,7 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
                     "[tid:%i] [sn:%llu] "
                     "Waiting for all stores to writeback.\n",
                     tid, head_inst->seqNum);
-            return false;
+            return StoreOrder;
         }
 
         toIEW->commitInfo[tid].nonSpecSeqNum = head_inst->seqNum;
@@ -1148,11 +1265,12 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
                     tid, head_inst->seqNum, head_inst->pcState());
             toIEW->commitInfo[tid].strictlyOrdered = true;
             toIEW->commitInfo[tid].strictlyOrderedLoad = head_inst;
+            return LoadOrder;
         } else {
             ++stats.commitNonSpecStalls;
         }
 
-        return false;
+        return classifyStall(head_inst);
     }
 
     // Check if the instruction caused a fault.  If so, trap.
@@ -1189,7 +1307,7 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
                     "[tid:%i] [sn:%llu] "
                     "Stores outstanding, fault must wait.\n",
                     tid, head_inst->seqNum);
-            return false;
+            return StoreOrder;
         }
 
         head_inst->setCompleted();
@@ -1242,7 +1360,7 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
 
         // Generate trap squash event.
         generateTrapEvent(tid, inst_fault);
-        return false;
+        return InstructionFault;
     }
 
     updateComInstStats(head_inst);
@@ -1287,8 +1405,11 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
     if (head_inst->isStore() || head_inst->isAtomic())
         committedStores[tid] = true;
 
-    // Return true to indicate that we have committed an instruction.
-    return true;
+    // // Return true to indicate that we have committed an instruction.
+    // return true;
+    
+    // Return the successful commit state for this cycle.
+    return CommitSuccess;
 }
 
 void

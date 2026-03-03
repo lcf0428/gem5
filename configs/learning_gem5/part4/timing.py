@@ -43,7 +43,8 @@ system.mem_mode = "timing"  # Use timing accesses
 system.mem_ranges = [AddrRange("512MiB")]  # Create an address range
 
 # 使用 AtomicSimpleCPU
-system.cpu = X86TimingSimpleCPU()
+# system.cpu = X86TimingSimpleCPU()
+system.cpu = DerivO3CPU()
 
 # 创建简单的内存总线
 system.membus = SystemXBar()
@@ -76,8 +77,8 @@ thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
     "../../../",
-    "tests/test-progs/hello/bin/x86/linux/hello",
-    # "tests/test-progs/threads/bin/x86/linux/threads",
+    # "tests/test-progs/hello/bin/x86/linux/hello",
+    "tests/test-progs/threads/bin/x86/linux/threads",
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
     # "../../mibench/mibench/security/sha/sha",
     # "../../Mibench/mibench/office/stringsearch/search_large",

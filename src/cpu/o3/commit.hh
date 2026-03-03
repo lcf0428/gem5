@@ -111,6 +111,22 @@ class Commit
         SquashAfterPending, //< Committing instructions before a squash.
     };
 
+    enum CycleState
+    {
+        CommitSuccess,
+        Squash,
+        LoadStall,
+        StoreStall,
+        LoadOrder,
+        StoreOrder,
+        ROBEmpty,
+        MemBarrier,
+        WriteBarrier,
+        InstructionFault,
+        NoThreadReady,
+        CycleStateMax
+    };
+
   private:
     /** Overall commit status. */
     CommitStatus _status;
@@ -287,7 +303,14 @@ class Commit
     /** Tries to commit the head ROB instruction passed in.
      * @param head_inst The instruction to be committed.
      */
-    bool commitHead(const DynInstPtr &head_inst, unsigned inst_num);
+    CycleState commitHead(const DynInstPtr &head_inst, unsigned inst_num);
+
+    /** Returns the per-cycle state for a head instruction that cannot
+     * currently commit. */
+    CycleState classifyStall(const DynInstPtr &head_inst) const;
+
+    /** Returns true when a thread can participate in commit selection. */
+    bool isCommitThreadReady(ThreadID tid) const;
 
     /** Gets instructions from rename and inserts them into the ROB. */
     void getInsts();
@@ -454,6 +477,9 @@ class Commit
         a possible livelock senario.  */
     bool avoidQuiesceLiveLock;
 
+    /** The single commit-stage state recorded for the current cycle. */
+    CycleState cycleState;
+
     /** Updates commit stats based on this instruction. */
     void updateComInstStats(const DynInstPtr &inst);
 
@@ -490,6 +516,12 @@ class Commit
 
         /** Number of cycles where the commit bandwidth limit is reached. */
         statistics::Scalar commitEligibleSamples;
+
+        /** Breakdown of commit-stage cycle states. */
+        statistics::Vector cycleStateBreakdown;
+        
+        /** Total number of commit-stage cycles classified. */
+        statistics::Scalar cycleStateCycles;
     } stats;
 };
 
