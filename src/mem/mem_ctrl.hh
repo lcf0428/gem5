@@ -1013,6 +1013,10 @@ class MemCtrl : public qos::MemCtrl
 
     bool blockedForDyL;
 
+    PacketPtr readCompressInWait;
+
+    std::unordered_set<PacketPtr> monitor;
+
     /* ======= end for DyLeCT ======= */
 
     /* ======= start for the new architecture ====== */

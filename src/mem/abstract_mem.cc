@@ -63,8 +63,8 @@ namespace gem5
         // } else {
         //     return false;
         // }
-        return false;
-        // return true;
+        // return false;
+        return true;
         // if (access_cnt < 700000000) {
         //     return false;
         // } else if (access_cnt < 1350000000) {

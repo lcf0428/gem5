@@ -560,7 +560,6 @@ Packet::configAsReadColdPage(const Addr& addr, uint64_t pageId) {
     setAddr(addr);
     setReadCmd();
     setSizeForMC(4096);   // read the whole page (4kB)
-    setPayload(nullptr);
     allocateForMC();
     setType(DyL_readColdPage);
     DyLStatus = 1;
@@ -572,7 +571,6 @@ Packet::configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page) {
     setAddr(addr);
     setWriteCmd();
     setSizeForMC(page.size());
-    setPayload(nullptr);
     allocateForMC();
     setType(DyL_writeColdPage);
     memcpy(data, page.data(), page.size());
