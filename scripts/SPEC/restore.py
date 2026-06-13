@@ -155,7 +155,7 @@ recency_list_sizes = [
     0, # bwaves ?
     892346,
     577706,
-    46355.4,
+    46355,
 #     0,
 #     0,
     302402,
@@ -174,7 +174,8 @@ BUILD_DIR = f"{HOME}/gem5_results/SPEC/build"
 RESULTS_DIR = f"{HOME}/gem5_results/SPEC/restore"
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
-restore_list = [0, 1, 2, 3, 4, 9, 10, 16]
+
+restore_list = [15]
 
 # for i in range(len(programs)):
 # for i in range (2):

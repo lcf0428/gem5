@@ -243,7 +243,7 @@ RESULTS_DIR = f"{HOME}/autodl-tmp/gem5_results/SPEC/checkpoint/{operation_mode}_
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
 
-index_list = [10, 13]
+index_list = [q]
 # index_list = [9]
 
 # for i in range(len(programs)):

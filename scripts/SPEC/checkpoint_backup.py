@@ -218,11 +218,11 @@ HOME = "/local/home/liuche"
 BASE_DIR = f"{HOME}/SPEC"  # TODO: change the SPEC directory
 GEM5_DIR = f"{HOME}/gem5/gem5"  # TODO: change the gem5 directory
 BUILD_DIR = f"{HOME}/gem5_results/SPEC/build"
-RESULTS_DIR = f"{HOME}/gem5_results/SPEC/checkpoint/{operation_mode}_small"
+RESULTS_DIR = f"{HOME}/gem5_results/SPEC/checkpoint/{operation_mode}"
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
 
-index_list = [8, 16]
+index_list = [15]
 # index_list = [9]
 
 # for i in range(len(programs)):
