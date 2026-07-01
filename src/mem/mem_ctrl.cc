@@ -118,6 +118,15 @@ namespace gem5
         return false;
     }
 
+    void print_hex_printf(const std::vector<uint8_t>& data, const char* separator = " ") {
+        for (size_t i = 0; i < data.size(); ++i) {
+            // 关键：将 uint8_t 提升为 int，否则会被当作 char 输出
+            std::printf("%02X", static_cast<int>(data[i]));
+            if (i + 1 < data.size()) std::printf("%s", separator);
+        }
+        std::printf("\n");
+    }
+
 
 namespace memory
 {
@@ -4772,6 +4781,9 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
         assert(!hasBlocked);
         // printf("blockedNumForDyL: %d\n", blockedNumForDyL);
         // printf("pkt_count: %d\n", pkt_count);
+
+        printf("blocked pkt: request %s addr %#x size %d\n",
+            pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
         if (((blockedNumForDyL + pkt_count) <= readBufferSize) && ((blockedNumForDyL + pkt_count) <= writeBufferSize)) {
             blockedQueueForDyL.push_back(pkt);
             printf("[T] add to blocked Queue\n");
@@ -4808,12 +4820,15 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
 
     uint32_t cteOft = (cteAddr >> 3) & ((1 << 3) - 1);
     uint32_t preGatherOft = (ppn - ((preGatherAddrAligned - startAddrForPreGather) * 4)) * 2;
+    bool hasSetBlockedForDyL = false;
     assert(preGatherOft >= 0);
 
     std::vector<uint8_t> cacheEntry(64, 0);
     dram->atomicRead(cacheEntry.data(), cteAddrAligned, 64);
     if ((cacheEntry[cteOft * 8] >> 6) & 0x1) {
+        printf("[A1] set the blocked for DyL to true\n");
         blockedForDyL = true;
+        hasSetBlockedForDyL = true;
     }
 
     /* check if the metadata cache hit */
@@ -4851,9 +4866,15 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
         if (expectWriteQueueFull(pkt_count)) {
             DPRINTF(MemCtrl, "Write queue full, not accepting\n");
             // remember that we have to retry this port
+            printf("dylect write queue full, not accepting\n");
+            printf("request %s addr %#x size %d\n",
+                    pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
             printf("pkt_count is %d\n", pkt_count);
             printf("pktinProcess is %d\n", pktInProcess);
             printf("expectWriteQueueSize is %d\n", expectWriteQueueSize);
+            if (hasSetBlockedForDyL) {
+                blockedForDyL = false;
+            }
             retryWrReq = true;
             stats.numWrRetry++;
             delete auxPkt;
@@ -4894,12 +4915,12 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                         the page is currently compressed
                         need to decompress first
                     */
-                    // printf("read compressed page\n");
+                    printf("read compressed page\n");
                     assert(waitForDecompress.first == nullptr);
                     /* The MC needs to issue readCompress and then writeUncompress packet to decompress the page first */
 
-                    // printf("type 3\n");
-                    // printf("the ppn is %lld\n", ppn);
+                    printf("type 3\n");
+                    printf("the ppn is %lld\n", ppn);
 
                     PacketPtr readCompress = new Packet(auxPkt);
                     // printf("the readCompress pkt address is 0x%llx\n", readCompress);
@@ -4955,9 +4976,15 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
         if (expectReadQueueFull(pkt_count)) {
             DPRINTF(MemCtrl, "Read queue full, not accepting\n");
             // remember that we have to retry this port
-            // printf("pkt_count is %d\n", pkt_count);
-            // printf("pktinProcess is %d\n", pktInProcess);
-            // printf("expectReadQueueSize is %d\n", expectReadQueueSize);
+            printf("dylect read queue full, not accepting\n");
+            printf("request %s addr %#x size %d\n",
+                    pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
+            printf("pkt_count is %d\n", pkt_count);
+            printf("pktinProcess is %d\n", pktInProcess);
+            printf("expectReadQueueSize is %d\n", expectReadQueueSize);
+            if (hasSetBlockedForDyL) {
+                blockedForDyL = false;
+            }
             delete auxPkt;
             retryRdReq = true;
             stats.numRdRetry++;
@@ -4984,6 +5011,7 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
             if (cacheHit == 0) {
                 /* cache miss */
                 /* the MC should issue a packet to read the CTE and pre-gather table simulatneously */
+                // printf("cache miss\n");
                 PacketPtr readCTE = new Packet(auxPkt);
                 auxPkt->ref_cnt++;
 
@@ -4991,14 +5019,17 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                 sign = addToReadQueueForDyL(readCTE, 1, dram);
                 stats.memToCPUMetaDataBytes += 128;
             } else {
+                // printf("cache hit\n");
+                // printf("the cte is: ");
+                // print_hex_printf(cteBlock);
                 if ((cacheHit == 1) && ((cteBlock[cteOft * 8] >> 6) & 0x1)) {
                     /* 
                         the page is currently compressed
                         need to decompress first
                     */
-
-                    // printf("type 2\n");
-                    // printf("the ppn is %lld\n", ppn);
+                    printf("read compressed page\n");
+                    printf("type 2\n");
+                    printf("the ppn is %lld\n", ppn);
 
                     /* The MC needs to issue readCompress and then writeUncompress packet to decompress the page first */
                     PacketPtr readCompress = new Packet(auxPkt);
@@ -5042,6 +5073,8 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                     }
                     Addr dram_page_addr = pageInfo.first;
                     Addr dram_addr = dram_page_addr | (auxPkt->getAddr() & ((1ULL << 12) - 1));
+
+                    printf("the page is not compressed , dram address is 0x%lx\n", dram_addr);
                     auxPkt->setAddr(dram_addr);
 
                     sign = addToReadQueueForDyL(auxPkt, pkt_count, dram);
@@ -6868,6 +6901,10 @@ void
 MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
     /* should only called this for aux_pkt type in timing mode and in functional mode */
     Addr pkt_addr = pkt->DyLBackup;
+    PacketPtr origin_pkt = pkt->DyLCandidate;
+
+    // printf("finish processing a pkt 0x%llx and enter the updateAndRemovePkt function\n", pkt);
+    // printf("the pkt addr is 0x%llx\n", pkt_addr);
 
     for (auto it = inProcessPkts.begin(); it != inProcessPkts.end(); ) {
         if (*it == pkt) {
@@ -6882,10 +6919,9 @@ MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
                 if (isOverlapped(pkt_addr, pkt->getSize(), ospa_addr, preceding_pkt->getSize())) {
                     printf("collision\n");
                     if (preceding_pkt->isWrite()) {
-                        printf("the preceding pkt is write\n");
                         Addr start_addr = std::max(ospa_addr, pkt_addr);
                         Addr end_addr = std::min(pkt_addr + pkt->getSize(), ospa_addr + preceding_pkt->getSize());
-                        memcpy(pkt->getPtr<uint8_t>() + start_addr - pkt_addr, preceding_pkt->getPtr<uint8_t>() + start_addr - ospa_addr, end_addr - start_addr);
+                        memcpy(origin_pkt->getPtr<uint8_t>() + start_addr - pkt_addr, preceding_pkt->getPtr<uint8_t>() + start_addr - ospa_addr, end_addr - start_addr);
                     }
                 }
             }
@@ -7008,6 +7044,16 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
 
         // TODO(lcf)
         updateAndRemovePkt(pkt, mem_intr);
+
+        // printf("=====>      \n");
+        // printf("after update and remove pkt: \n");
+        // for (int i = 0; i < pkt->getSize(); i++) {
+        //     printf("%02x ", static_cast<unsigned int>(pkt->getPtr<uint8_t>()[i]));
+        // }
+        // printf("\n origin pkt: \n");
+        // for (int i = 0; i < origin_pkt->getSize(); i++) {
+        //     printf("%02x ", static_cast<unsigned int>(origin_pkt->getPtr<uint8_t>()[i]));
+        // }
         // printf("finish updateAndRemove pkt\n");
         // printf("inProcessPkts size is %d\n", inProcessPkts.size());
         // printf("the blocked pkt size is %d\n", blockedQueueForDyL.size());
@@ -7134,11 +7180,13 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         /* step 3: reset the waitForDecompress */
         waitForDecompress = std::make_pair(nullptr, 0);
         blockedForDyL = false;
+        printf("set the blockedForDyL to false\n");
         for (auto it = blockedQueueForDyL.begin(); it != blockedQueueForDyL.end(); ) {
             if (blockedForDyL) {
                 break;
             }
             if ((*it)->DyLPType == 0x100) {
+                printf("DyLPType is 0x100\n");
                 if (((*it)->DyLBackup >> 12) == pageInCompress.first) {
                     pageInCompress.second = true;
                 }
@@ -7319,6 +7367,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
 
     } else if (packet_type == 0x40) {
         /* readCTE */
+        printf("process the readCTE pkt\n");
+        printf("aux pkt is 0x%llx\n", pkt->DyLCandidate);
         assert (pkt->getSize() == 64);
 
         PacketPtr aux_pkt = pkt->DyLCandidate;
@@ -7344,6 +7394,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         stats.memToCPUMetaDataBytes += 128;
 
         bool hitInPreGatherTable = isValidCTE(preGatherBlock, preGatherOft, true);
+
+        printf("hit in pregather table? %d\n", hitInPreGatherTable);
 
         uint32_t burst_size = mem_intr->bytesPerBurst();
         // TODO(lcf): always add pregathered cte to mcache 
@@ -7386,6 +7438,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         } else {
             if (!isValidCTE(cteBlock, cteOft, false)) {
                 // access a new page
+                // printf("the cte is invalid, the new is: ");
                 assert(freeList.size() > 0);
                 Addr dram_addr = freeList.front();
                 freeList.pop_front();
@@ -7395,7 +7448,10 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 mem_intr->atomicWrite(zeroPage, dram_addr, 4096, 0);
                 updateMetaDataForDyL(ppn, dram_addr, 1, mem_intr);
                 mem_intr->atomicRead(cteBlock.data(), cteAddrAligned, 64);
+                // print_hex_printf(cteBlock);
             } else {
+                // printf("the cte is valid: ");
+                // print_hex_printf(cteBlock);
                 mcache.add(cteAddrAligned, cteBlock);
                 stats.numWrToMcache += 1;
             }
@@ -7408,14 +7464,13 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 */
                 // assert(pagesInDecompress.find(ppn) == pagesInDecompress.end());
                 // pagesInDecompress.insert(ppn);
-                printf("read compressed page\n");
 
                 assert(blockedForDyL);
                 /* The MC needs to issue readCompress and then writeUncompress packet to decompress the page first */
 
-
-                // printf("type 1\n");
-                // printf("the ppn is %lld\n", ppn);
+                printf("read compressed page\n");
+                printf("type 1\n");
+                printf("the ppn is %lld\n", ppn);
 
                 PacketPtr readCompress = new Packet(aux_pkt);
 
@@ -7447,6 +7502,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 /* translate the addr */
                 Addr dram_page_addr = pageInfo.first;
                 Addr dram_addr = dram_page_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+
+                printf("the dram addr is %llx\n", dram_addr);
                 aux_pkt->setAddr(dram_addr);
 
                 unsigned offset = aux_pkt->getAddr() & (burst_size - 1);
@@ -10523,8 +10580,11 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     */
 
     if (blockedForDyL || inProcessPkts.size() > 0) {
+        // printf("enter the special handling branch: blocked for DyL is %d, inProcessPkts.size() is %d\n", blockedForDyL, inProcessPkts.size());
+        // printf("the first element of inProcessPkts is 0x%llx\n", *(inProcessPkts.begin()));
         if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
             PacketPtr auxPkt = new Packet(pkt);
+            // printf("[F] the auxPkt is 0x%llx\n", auxPkt);
             auxPkt->DyLBackup = pkt->getAddr();
             auxPkt->DyLPType = 0x100;
             auxPkt->allocateForMC();
@@ -10553,7 +10613,6 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                     std::pair<Addr, uint32_t> pageInfo = parsePageInfoForDyL(cacheLine, loc, 1);
                     if ((cacheLine[loc * 8] >> 6) & 0x1) {
                         /* the page is in compressed form */
-
                         std::vector<uint8_t> cPage(pageInfo.second);
                         mem_intr->atomicRead(cPage.data(), pageInfo.first, cPage.size());
                         std::vector<uint8_t> dPage = decompressPage(cPage.data(), pageInfo.second);
@@ -10578,7 +10637,6 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
                             Addr end_addr = std::min(pkt_addr + pkt->getSize(), ospa_addr + preceding_pkt->getSize());
                             memcpy(read_data.data() + start_addr - pkt_addr, preceding_pkt->getPtr<uint8_t>() + start_addr - ospa_addr, end_addr - start_addr);
                         }
-
                     }
                 }
 
@@ -11049,6 +11107,8 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         // update the CTE
         cte = (1ULL << 63) | (0ULL << 62) | (((addr >> 12) & ((1ULL << 30) - 1)) << 32);
 
+        printf("the cte is invalid, the new cte is 0x%llx\n", cte);
+
         /* update the metacache entry */
         uint64_t cteVal = cte;
         for (int i = (loc * 8 + 7); i >= loc * 8; i--) {
@@ -11057,10 +11117,12 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         }
 
     } else {
+        printf("the cte is valid, the cte is 0x%llx\n", cte);
         if ((cte & (1ULL << 62)) == 0){   // the OS physical page is uncompressed
             addr = ((cte >> 32) & ((1ULL << 30) - 1)) << 12;
         } else {
             DPRINTF(MemCtrl, "Functional Opps, we read/write physical page which is compressed\n");
+            printf("we read/write physical page which is compressed\n");
             uint64_t compressedSize = ((cte >> 50) & ((1ULL << 12) - 1)) + 1;   // size range [1, 2kiB]
 
             std::vector<uint8_t> pageBuffer(compressedSize, 0);
@@ -11092,6 +11154,8 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
            /* update the metacache entry */
             cte = (1ULL << 63) | (0ULL << 62) | (((addr >> 12) & ((1ULL << 30) - 1)) << 32);
+
+            printf("after decompress, the new cte is 0x%llx\n", cte);
 
             uint64_t cteVal = cte;
             for (int i = (loc * 8 + 7); i >= loc * 8; i--) {

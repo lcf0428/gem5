@@ -21,18 +21,18 @@ int main() {
     
     uint8_t* victim_page = static_cast<uint8_t*>(ptr);
 
-    for (int i = 0; i < 4096; i++) {
-        victim_page[i] = 0;
-    }
-
-    victim_page[0] = 1;
-
-
-    // for (int i = 0; i < 64; i++) {
-    //     for (int j = 0; j < 64; j++) {
-    //         victim_page[i * 64 + j] = (i * 64 + j) % (17 + i);
-    //     }
+    // for (int i = 0; i < 4096; i++) {
+    //     victim_page[i] = 0;
     // }
+
+    // victim_page[0] = 1;
+
+
+    for (int i = 0; i < 64; i++) {
+        for (int j = 0; j < 64; j++) {
+            victim_page[i * 64 + j] = (i * 64 + j) % (17 + i);
+        }
+    }
 
     _mm_mfence();
 

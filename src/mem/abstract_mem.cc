@@ -63,8 +63,8 @@ namespace gem5
         // } else {
         //     return false;
         // }
-        return false;
-        // return true;
+        // return false;
+        return true;
         // if (access_cnt < 700000000) {
         //     return false;
         // } else if (access_cnt < 1350000000) {
@@ -481,9 +481,9 @@ AbstractMemory::access(PacketPtr pkt, unsigned long long access_cnt)
         }
 
         if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0, access_cnt)) {
-            printf("Atomic read marker: ");
-            // printf("marker:%lx\n", pkt);
-            // printf("Timing read marker: ");
+            // printf("Atomic read marker: ");
+            printf("marker:%lx\n", pkt);
+            printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
             for (int ts = 0; ts < pkt->getSize(); ts++) {
                printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -511,9 +511,9 @@ AbstractMemory::access(PacketPtr pkt, unsigned long long access_cnt)
             if (pmemAddr) {
 
                 if (isAddressCoveredForAM(pkt->getAddr(), pkt->getSize(), 0, access_cnt)) {
-                    printf("Atomic write marker: ");
-                    // printf("marker:%lx\n", pkt);
-                    // printf("Timing write marker: ");
+                    // printf("Atomic write marker: ");
+                    printf("marker:%lx\n", pkt);
+                    printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
                     printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -631,9 +631,9 @@ AbstractMemory::accessForDyL(PacketPtr pkt, PacketPtr aux_pkt)
         }
 
         if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0)) {
-            printf("Atomic read marker: ");
-            // printf("marker:%lx\n", aux_pkt);
-            // printf("Timing read marker: ");
+            // printf("Atomic read marker: ");
+            printf("marker:%lx\n", aux_pkt);
+            printf("Timing read marker: ");
             uint8_t* start = pkt->getPtr<uint8_t>();
             for (int ts = 0; ts < pkt->getSize(); ts++) {
                printf("%02x ", static_cast<unsigned int>(start[ts]));
@@ -661,9 +661,9 @@ AbstractMemory::accessForDyL(PacketPtr pkt, PacketPtr aux_pkt)
             if (pmemAddr) {
 
                 if (isAddressCoveredForAM(pkt->DyLBackup, pkt->getSize(), 0)) {
-                    printf("Atomic write marker: ");
-                    // printf("marker:%lx\n", aux_pkt);
-                    // printf("Timing write marker: ");
+                    // printf("Atomic write marker: ");
+                    printf("marker:%lx\n", aux_pkt);
+                    printf("Timing write marker: ");
                     uint8_t* start = pkt->getPtr<uint8_t>();
                     for (int ts = 0; ts < pkt->getSize(); ts++) {
                         printf("%02x ", static_cast<unsigned int>(start[ts]));
