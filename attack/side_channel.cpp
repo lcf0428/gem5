@@ -86,7 +86,7 @@ volatile uint8_t aux;
 
 int main() {
 
-    uint8_t SECRET = 0x0;
+    uint8_t SECRET = 0x1;
 
     void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, 
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -148,6 +148,7 @@ int main() {
     sink = victim_page[1];
     _mm_mfence();
     m5_dump_stats(0, 0);
+    m5_exit(1000);
 
     return 0;
 }

@@ -8,6 +8,8 @@
 #include <mmintrin.h>
 #include <x86intrin.h>
 
+#include <unistd.h>
+
 volatile uint64_t sink;
 // volatile uint8_t sink;
 volatile uint8_t aux;
@@ -16,7 +18,7 @@ volatile uint8_t aux;
 #define N 40960
 
 int main() {
-
+    usleep(100000);
     void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, 
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
@@ -27,6 +29,12 @@ int main() {
         victim_page[i] = 1;
     }
 
+    /* ===== the cache line is not cross the boundary ===== */
+    // for (int i = 0; i < 64; i++) {
+    //     victim_page[64 + i] = 2;
+    // }
+
+    /* ===== the cache line becomes cross boundary =====*/
     for (int i = 0; i < 64; i++) {
         victim_page[64 + i] = i * i;
     }
@@ -74,6 +82,8 @@ int main() {
     m5_dump_stats(0, 0);
 
     _mm_mfence();
+
+    m5_exit(1000);
 
     return 0;
 }
