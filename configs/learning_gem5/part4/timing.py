@@ -78,8 +78,9 @@ binary = os.path.join(
     thispath,
     "../../../",
     # "tests/test-progs/hello/bin/x86/linux/hello",
-    "attack/side_channel_dylect",
-    # "../../nginx/end-to-end3/victim/victim",
+    # "attack/side_channel2",
+    # "../../stress-ng/stress-ng",
+    "../../nginx/end-to-end3/victim/victim",
     # "tests/test-progs/threads/bin/x86/linux/threads",
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
     # "../../mibench/mibench/security/sha/sha",
@@ -91,11 +92,16 @@ binary = os.path.join(
 
 system.workload = SEWorkload.init_compatible(binary)
 
+# leak the first byte
+passwd = "a" * 535 + "edcb" + "a" * 15
+# passwd = "a" * 554
+
+# leak the second byte
 # mid = '0' * 14 + "a9" * 13 + "0" + "!" * 23
 
 # passwd = 'a' * 46 + mid + "abcdefgh" + "a" * 52
-# passwd = "a" * 235
-# usr_passwd = "a:" + passwd
+
+usr_passwd = "a:" + passwd
 
 # print("usr:passwd: ", usr_passwd)
 # print("len of usr:passwd: ", len(usr_passwd))
@@ -104,9 +110,15 @@ system.workload = SEWorkload.init_compatible(binary)
 process = Process()
 # process.cmd = [binary, "../../mibench/mibench/security/sha/input_large.asc"]
 # process.cmd = [binary, "/local/home/liuche/Mibench/mibench/network/dijkstra/input.dat"]
-process.cmd = [binary]
+# process.cmd = [binary]
+# process.cmd = [
+#     binary,
+#     "--cache", "1",
+#     "--timeout", "1s",
+#     # "--metrics-brief",
+# ]
 # process.cmd = [binary, usr_passwd, "aaaaaaa"]
-# process.cmd = [binary, usr_passwd, "111aaaa"]
+process.cmd = [binary, usr_passwd, "111aaaa"]
 # process.cmd = [binary, "/local/home/liuche/Mibench/mibench/automotive/qsort/input_large.dat"]
 system.cpu.workload = process
 system.cpu.createThreads()
