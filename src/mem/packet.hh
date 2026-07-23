@@ -590,7 +590,9 @@ class Packet : public Printable, public Extensible<Packet>
         DyL_writeColdPage           = 0x00000020,
         DyL_readCTE                 = 0x00000040,
         DyL_writeCTE                = 0x00000080,
-        DyL_functional              = 0x00000100
+        DyL_functional              = 0x00000100,
+        DyL_readML1Page             = 0x00000200,
+        DyL_writeML0Page            = 0x00000400
     };
 
     /// only used for the metadata read/write
@@ -1927,6 +1929,11 @@ class Packet : public Printable, public Extensible<Packet>
     void configAsReadCTE(const Addr& addr, PacketPtr p);
 
     void configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size = 64);
+
+    void configAsReadML1Page(const Addr& addr, uint64_t pageId, PacketPtr p);
+
+    void configAsWriteML0Page(const Addr& addr, PacketPtr p,
+                              std::vector<uint8_t>& page, uint64_t pageId);
 
     /* ============== special for new architecture ============ */
 

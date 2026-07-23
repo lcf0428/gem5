@@ -625,6 +625,32 @@ Packet::configAsWriteCTE(const Addr& addr, PacketPtr p, size_t size) {
 }
 
 void
+Packet::configAsReadML1Page(const Addr& addr, uint64_t pageId, PacketPtr p)
+{
+    setAddr(addr);
+    setReadCmd();
+    setSizeForMC(4096);
+    setPayload(p);
+    allocateForMC();
+    setType(DyL_readML1Page);
+    compressPageId = pageId;
+}
+
+void
+Packet::configAsWriteML0Page(const Addr& addr, PacketPtr p,
+                             std::vector<uint8_t>& page, uint64_t pageId)
+{
+    setAddr(addr);
+    setWriteCmd();
+    setSizeForMC(4096);
+    setPayload(p);
+    allocateForMC();
+    setType(DyL_writeML0Page);
+    compressPageId = pageId;
+    memcpy(data, page.data(), 4096);
+}
+
+void
 Packet::configAsSubPkt(PacketPtr pkt, const uint32_t& idx) {
     // assert(burst_size == 64);
     uint32_t burst_size = 64;

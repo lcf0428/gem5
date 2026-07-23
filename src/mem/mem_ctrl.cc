@@ -152,12 +152,16 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     recordForCheckReady(false),
     blockedForDyL(false),
     readCompressInWait(nullptr),
+    readML1InWait(nullptr),
     compressColdPageInProcess(false),
     blockedNumForDyL(0),
     pktInProcess(0),
     startAddrForCTE(0),
     startAddrForPreGather(0),
     decompress_latency(277000), compress_latency(662000),
+    enableML0MigrationForDyL(true),
+    dylectAccessEpoch(0),
+    dylectAccessDecayInterval(1),
     expectReadQueueSize(0),
     expectWriteQueueSize(0),
     blockedForNew(false),
@@ -270,12 +274,17 @@ MemCtrl::init()
 
         // memoryUsageThreshold = static_cast<uint64_t>(recencyListSize) * 100LL;
         memoryUsageThreshold = 100;
+        thresholdForPromotion = 8;
+        dylectAccessDecayInterval = thresholdForPromotion * 8;
 
         uint16_t new_cap = CACHE_SIZE / 64;
         mcache.post_init(new_cap);
 
         printf("Initial: the size of freeList is %ld\n", freeList.size());
         printf("Initial: the threshold of memory usage is %lld\n", memoryUsageThreshold);
+        printf("Initial: the promotion threshold is %lld\n", thresholdForPromotion);
+        printf("Initial: ML0 page migration is %s\n",
+            enableML0MigrationForDyL ? "enabled" : "disabled");
 
         page_group_num = freeList.size() / 3;
         printf("Initial: the total num of page groups is %lld\n", page_group_num);
@@ -346,11 +355,72 @@ MemCtrl::serialize(gem5::CheckpointOut &cp) const {
         SERIALIZE_CONTAINER(smallChunkList);
     } else if (operationMode == "DyLeCT"){
         printf("When serialize, the current size of recencyList is %ld\n", recencyList.size());
+        // Packet pointers cannot be reconstructed safely.  Checkpointing is
+        // therefore supported after the normal gem5 drain has quiesced the
+        // custom DyLeCT migration pipeline.
+        panic_if(pendingML0MigrationForDyL.valid() || readML1InWait ||
+                 readCompressInWait || waitForDecompress.first ||
+                 !blockedQueueForDyL.empty(),
+                 "DyLeCT checkpoint requires a drained migration pipeline");
         SERIALIZE_CONTAINER(freeList);
         SERIALIZE_CONTAINER(smallFreeList);
         SERIALIZE_CONTAINER(moderateFreeList);
         SERIALIZE_CONTAINER(largeFreeList);
         SERIALIZE_CONTAINER(recencyList);
+
+        std::vector<PPN> dylect_incompressible_pages(
+            incompressiblePages.begin(), incompressiblePages.end());
+        SERIALIZE_CONTAINER(dylect_incompressible_pages);
+
+        std::vector<PPN> dylect_location_ppns;
+        std::vector<Addr> dylect_location_addrs;
+        for (const auto &entry : uncompressedLocationForDyL) {
+            dylect_location_ppns.push_back(entry.first);
+            dylect_location_addrs.push_back(entry.second);
+        }
+        SERIALIZE_CONTAINER(dylect_location_ppns);
+        SERIALIZE_CONTAINER(dylect_location_addrs);
+
+        std::vector<uint8_t> dylect_ml0_valid;
+        std::vector<PPN> dylect_ml0_ppns;
+        std::vector<uint32_t> dylect_ml0_counts;
+        std::vector<uint64_t> dylect_ml0_epochs;
+        std::vector<uint64_t> dylect_tracked_groups;
+        std::vector<PPN> dylect_tracked_ppns;
+        std::vector<uint32_t> dylect_tracked_counts;
+        std::vector<uint64_t> dylect_tracked_epochs;
+        for (uint64_t group = 0; group < pageGroups.size(); ++group) {
+            for (uint8_t pos = 0; pos < 3; ++pos) {
+                AccessCntInfo entry{};
+                bool valid = pageGroups[group].getML0Entry(pos, entry);
+                dylect_ml0_valid.push_back(valid);
+                dylect_ml0_ppns.push_back(valid ? entry.PPN : 0);
+                dylect_ml0_counts.push_back(valid ? entry.accessCnt : 0);
+                dylect_ml0_epochs.push_back(valid ? entry.lastAccessEpoch : 0);
+            }
+            for (const auto &entry : pageGroups[group].getTrackedPages()) {
+                dylect_tracked_groups.push_back(group);
+                dylect_tracked_ppns.push_back(entry.PPN);
+                dylect_tracked_counts.push_back(entry.accessCnt);
+                dylect_tracked_epochs.push_back(entry.lastAccessEpoch);
+            }
+        }
+        SERIALIZE_CONTAINER(dylect_ml0_valid);
+        SERIALIZE_CONTAINER(dylect_ml0_ppns);
+        SERIALIZE_CONTAINER(dylect_ml0_counts);
+        SERIALIZE_CONTAINER(dylect_ml0_epochs);
+        SERIALIZE_CONTAINER(dylect_tracked_groups);
+        SERIALIZE_CONTAINER(dylect_tracked_ppns);
+        SERIALIZE_CONTAINER(dylect_tracked_counts);
+        SERIALIZE_CONTAINER(dylect_tracked_epochs);
+
+        std::vector<Addr> dylect_mcache_addrs;
+        std::vector<uint8_t> dylect_mcache_bytes;
+        mcache.checkpointEntries(dylect_mcache_addrs, dylect_mcache_bytes);
+        SERIALIZE_CONTAINER(dylect_mcache_addrs);
+        SERIALIZE_CONTAINER(dylect_mcache_bytes);
+        SERIALIZE_SCALAR(dylectAccessEpoch);
+        SERIALIZE_SCALAR(dylectAccessDecayInterval);
     } else {
         SERIALIZE_CONTAINER(freeList);
     }
@@ -377,6 +447,83 @@ MemCtrl::unserialize(gem5::CheckpointIn &cp) {
         UNSERIALIZE_CONTAINER(moderateFreeList);
         UNSERIALIZE_CONTAINER(largeFreeList);
         UNSERIALIZE_CONTAINER(recencyList);
+
+        std::vector<PPN> dylect_incompressible_pages;
+        UNSERIALIZE_CONTAINER(dylect_incompressible_pages);
+        incompressiblePages.clear();
+        incompressiblePages.insert(dylect_incompressible_pages.begin(),
+                                  dylect_incompressible_pages.end());
+
+        std::vector<PPN> dylect_location_ppns;
+        std::vector<Addr> dylect_location_addrs;
+        UNSERIALIZE_CONTAINER(dylect_location_ppns);
+        UNSERIALIZE_CONTAINER(dylect_location_addrs);
+        panic_if(dylect_location_ppns.size() != dylect_location_addrs.size(),
+                 "corrupt DyLeCT checkpoint location map");
+        uncompressedLocationForDyL.clear();
+        uncompressedOwnerForDyL.clear();
+        for (size_t i = 0; i < dylect_location_ppns.size(); ++i) {
+            registerUncompressedPageForDyL(dylect_location_ppns[i],
+                                           dylect_location_addrs[i]);
+        }
+
+        std::vector<uint8_t> dylect_ml0_valid;
+        std::vector<PPN> dylect_ml0_ppns;
+        std::vector<uint32_t> dylect_ml0_counts;
+        std::vector<uint64_t> dylect_ml0_epochs;
+        std::vector<uint64_t> dylect_tracked_groups;
+        std::vector<PPN> dylect_tracked_ppns;
+        std::vector<uint32_t> dylect_tracked_counts;
+        std::vector<uint64_t> dylect_tracked_epochs;
+        UNSERIALIZE_CONTAINER(dylect_ml0_valid);
+        UNSERIALIZE_CONTAINER(dylect_ml0_ppns);
+        UNSERIALIZE_CONTAINER(dylect_ml0_counts);
+        UNSERIALIZE_CONTAINER(dylect_ml0_epochs);
+        UNSERIALIZE_CONTAINER(dylect_tracked_groups);
+        UNSERIALIZE_CONTAINER(dylect_tracked_ppns);
+        UNSERIALIZE_CONTAINER(dylect_tracked_counts);
+        UNSERIALIZE_CONTAINER(dylect_tracked_epochs);
+        panic_if(dylect_ml0_valid.size() != pageGroups.size() * 3 ||
+                 dylect_ml0_ppns.size() != dylect_ml0_valid.size() ||
+                 dylect_ml0_counts.size() != dylect_ml0_valid.size() ||
+                 dylect_ml0_epochs.size() != dylect_ml0_valid.size() ||
+                 dylect_tracked_groups.size() != dylect_tracked_ppns.size() ||
+                 dylect_tracked_counts.size() != dylect_tracked_ppns.size() ||
+                 dylect_tracked_epochs.size() != dylect_tracked_ppns.size(),
+                 "corrupt DyLeCT checkpoint page-group state");
+        for (uint64_t group = 0; group < pageGroups.size(); ++group) {
+            pageGroups[group] = PageGroupInfo(pageGroups[group].baseAddr);
+            for (uint8_t pos = 0; pos < 3; ++pos) {
+                size_t index = group * 3 + pos;
+                if (dylect_ml0_valid[index]) {
+                    pageGroups[group].addNewOSPageToML0(
+                        pos, dylect_ml0_ppns[index], dylect_ml0_counts[index],
+                        dylect_ml0_epochs[index]);
+                }
+            }
+        }
+        for (size_t i = 0; i < dylect_tracked_ppns.size(); ++i) {
+            panic_if(dylect_tracked_groups[i] >= pageGroups.size(),
+                     "corrupt DyLeCT checkpoint tracker group");
+            pageGroups[dylect_tracked_groups[i]].restoreTrackedPage(
+                AccessCntInfo{dylect_tracked_ppns[i], dylect_tracked_counts[i],
+                              dylect_tracked_epochs[i]});
+        }
+
+        std::vector<Addr> dylect_mcache_addrs;
+        std::vector<uint8_t> dylect_mcache_bytes;
+        UNSERIALIZE_CONTAINER(dylect_mcache_addrs);
+        UNSERIALIZE_CONTAINER(dylect_mcache_bytes);
+        mcache.restoreEntries(dylect_mcache_addrs, dylect_mcache_bytes);
+        UNSERIALIZE_SCALAR(dylectAccessEpoch);
+        UNSERIALIZE_SCALAR(dylectAccessDecayInterval);
+        panic_if(dylectAccessDecayInterval == 0,
+                 "corrupt DyLeCT checkpoint decay interval");
+
+        recencyMap.clear();
+        for (auto it = recencyList.begin(); it != recencyList.end(); ++it) {
+            recencyMap[*it] = it;
+        }
     } else {
         // UNSERIALIZE_CONTAINER(freeList);
     }
@@ -1083,6 +1230,10 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     }
 
     mem_intr->atomicWrite(cacheLine, cteAddrAligned, cacheLine.size());
+
+    // Atomic accesses are architectural accesses only.  They must not affect
+    // DyLeCT placement/hotness state; timing requests are the sole source of
+    // ML0 promotion and replacement decisions.
 
     /*
         stage 5:
@@ -4668,7 +4819,7 @@ MemCtrl::isValidCTE(const std::vector<uint8_t>& cte, uint32_t ofs, bool isPreGat
         assert(target_byte < 64);
         uint8_t oft_within_byte = ofs % 8;
         assert(ofs % 2 == 0);
-        uint8_t short_cte = (cte[target_byte] >> (6 - oft_within_byte)) & 0x11;
+        uint8_t short_cte = (cte[target_byte] >> (6 - oft_within_byte)) & 0x3;
         return short_cte != 0b00;
     } else {
         uint8_t first_byte = cte[ofs * 8];
@@ -4690,10 +4841,449 @@ MemCtrl::updateRecencyList(uint64_t ppn) {
             recencyMap[ppn] = recencyList.begin();
             incompressiblePages.erase(ppn);
         }
+        return;
     }
 
     recencyList.push_front(ppn);
     recencyMap[ppn] = recencyList.begin();
+}
+
+void
+MemCtrl::registerUncompressedPageForDyL(PPN ppn, Addr page_dram_addr)
+{
+    // Keep a bidirectional map for uncompressed pages so ML0 promotion and
+    // victim migration can identify who currently owns a physical 4KB slot.
+    auto old_it = uncompressedLocationForDyL.find(ppn);
+    if (old_it != uncompressedLocationForDyL.end() &&
+        old_it->second != page_dram_addr) {
+        uncompressedOwnerForDyL.erase(old_it->second);
+    }
+
+    auto owner_it = uncompressedOwnerForDyL.find(page_dram_addr);
+    if (owner_it != uncompressedOwnerForDyL.end() && owner_it->second != ppn) {
+        uncompressedLocationForDyL.erase(owner_it->second);
+    }
+
+    uncompressedLocationForDyL[ppn] = page_dram_addr;
+    uncompressedOwnerForDyL[page_dram_addr] = ppn;
+}
+
+void
+MemCtrl::unregisterUncompressedPageForDyL(PPN ppn)
+{
+    auto it = uncompressedLocationForDyL.find(ppn);
+    if (it == uncompressedLocationForDyL.end()) {
+        return;
+    }
+
+    uncompressedOwnerForDyL.erase(it->second);
+    uncompressedLocationForDyL.erase(it);
+}
+
+void
+MemCtrl::clearML0TrackingForDyL(PPN ppn)
+{
+    // A page leaving the uncompressed hierarchy should disappear from both the
+    // ML0 resident set and the per-group promotion tracker.
+    if (page_group_num == 0) {
+        return;
+    }
+
+    auto& page_group = pageGroups[ppn % page_group_num];
+    uint8_t ml0_pos = 0;
+    if (page_group.findML0Page(ppn, ml0_pos)) {
+        page_group.removeOSPageFromML0(ml0_pos);
+    }
+    page_group.removePage(ppn);
+}
+
+bool
+MemCtrl::removePageFromFreeListForDyL(Addr page_dram_addr)
+{
+    for (auto it = freeList.begin(); it != freeList.end(); ++it) {
+        if (*it == page_dram_addr) {
+            freeList.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool
+MemCtrl::pageAvailableForML0ForDyL(Addr page_dram_addr) const
+{
+    if (uncompressedOwnerForDyL.find(page_dram_addr) !=
+        uncompressedOwnerForDyL.end()) {
+        return true;
+    }
+
+    for (const auto& addr : freeList) {
+        if (addr == page_dram_addr) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+Addr
+MemCtrl::allocateML1PageForDyL()
+{
+    assert(!freeList.empty());
+    Addr page_dram_addr = freeList.front();
+    freeList.pop_front();
+    return page_dram_addr;
+}
+
+void
+MemCtrl::relocateUncompressedPageForDyL(PPN ppn, Addr old_addr, Addr new_addr,
+                                        MemInterface* mem_intr)
+{
+    if (old_addr == new_addr) {
+        registerUncompressedPageForDyL(ppn, new_addr);
+        return;
+    }
+
+    std::vector<uint8_t> page(4096, 0);
+    mem_intr->atomicRead(page.data(), old_addr, 4096);
+    mem_intr->atomicWrite(page, new_addr, 4096);
+    registerUncompressedPageForDyL(ppn, new_addr);
+    freeList.push_back(old_addr);
+}
+
+Addr
+MemCtrl::maybePromoteToML0ForDyL(PPN ppn, Addr page_dram_addr,
+                                 MemInterface* mem_intr)
+{
+    return applyML0PolicyForDyL(ppn, page_dram_addr, mem_intr,
+                                enableML0MigrationForDyL);
+}
+
+bool
+MemCtrl::translateAddrForDyLTiming(PacketPtr aux_pkt, Addr page_dram_addr,
+                                   Addr& dram_addr, MemInterface* mem_intr)
+{
+    PPN ppn = aux_pkt->DyLBackup >> 12;
+
+    if (!enableML0MigrationForDyL || page_group_num == 0) {
+        Addr page_addr = maybePromoteToML0ForDyL(ppn, page_dram_addr, mem_intr);
+        dram_addr = page_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+        return true;
+    }
+
+    uint64_t group_idx = ppn % page_group_num;
+    auto& page_group = pageGroups[group_idx];
+    const uint64_t epoch = ++dylectAccessEpoch;
+    page_group.ageAccessCounts(epoch, dylectAccessDecayInterval);
+    uint8_t ml0_pos = 0;
+
+    if (page_group.findML0Page(ppn, ml0_pos)) {
+        page_group.updateAccessCntForML0(ppn, epoch);
+        Addr page_addr = page_group.baseAddr + static_cast<Addr>(ml0_pos) * 4096;
+        registerUncompressedPageForDyL(ppn, page_addr);
+        dram_addr = page_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+        return true;
+    }
+
+    page_group.updateAccessCnt(ppn, epoch);
+    uint32_t access_cnt = page_group.getAccessCnt(ppn);
+    registerUncompressedPageForDyL(ppn, page_dram_addr);
+
+    if (access_cnt < thresholdForPromotion) {
+        dram_addr = page_dram_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+        return true;
+    }
+
+    if (inProcessPkts.size() != 1 || readCompressInWait || readML1InWait ||
+        pendingML0MigrationForDyL.valid() || waitForDecompress.first) {
+        printf("[DyL][ML0-DEFER-BUSY] ppn=%llu group=%llu addr=0x%llx accessCnt=%u inProcess=%llu\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned long long>(page_dram_addr),
+            access_cnt,
+            static_cast<unsigned long long>(inProcessPkts.size()));
+        dram_addr = page_dram_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+        return true;
+    }
+
+    assert(!pendingML0MigrationForDyL.valid());
+    blockedForDyL = true;
+
+    uint8_t target_pos = 0xFF;
+    if (page_group.getNumOSPageInML0() == 3) {
+        target_pos = page_group.getVictimPageLoc();
+    } else {
+        for (uint8_t pos = 0; pos < 3; ++pos) {
+            if (page_group.osPagesInML0.count(pos) == 0) {
+                target_pos = pos;
+                break;
+            }
+        }
+    }
+    assert(target_pos < 3);
+
+    pendingML0MigrationForDyL.auxPkt = aux_pkt;
+    pendingML0MigrationForDyL.ppn = ppn;
+    pendingML0MigrationForDyL.sourceAddr = page_dram_addr;
+    pendingML0MigrationForDyL.targetAddr =
+        page_group.baseAddr + static_cast<Addr>(target_pos) * 4096;
+    pendingML0MigrationForDyL.targetPos = target_pos;
+
+    if (!pageAvailableForML0ForDyL(pendingML0MigrationForDyL.targetAddr)) {
+        printf("[DyL][ML0-DEFER-TARGET] ppn=%llu group=%llu src=0x%llx dst=0x%llx accessCnt=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned long long>(page_dram_addr),
+            static_cast<unsigned long long>(pendingML0MigrationForDyL.targetAddr),
+            access_cnt);
+        pendingML0MigrationForDyL.reset();
+        blockedForDyL = false;
+        dram_addr = page_dram_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+        return true;
+    }
+
+    PacketPtr readML1Page = new Packet(aux_pkt);
+    aux_pkt->ref_cnt++;
+    readML1Page->configAsReadML1Page(page_dram_addr, ppn, aux_pkt);
+
+    printf("[DyL][ML0-QUEUE] ppn=%llu group=%llu src=0x%llx dst=0x%llx pos=%u accessCnt=%u\n",
+        static_cast<unsigned long long>(ppn),
+        static_cast<unsigned long long>(group_idx),
+        static_cast<unsigned long long>(page_dram_addr),
+        static_cast<unsigned long long>(pendingML0MigrationForDyL.targetAddr),
+        static_cast<unsigned>(target_pos),
+        access_cnt);
+
+    if (inProcessPkts.size() == 1) {
+        uint32_t burst_size = mem_intr->bytesPerBurst();
+        unsigned offset = readML1Page->getAddr() & (burst_size - 1);
+        unsigned int pkt_count = divCeil(offset + readML1Page->getSize(),
+                                         burst_size);
+        bool sign = addToReadQueueForDyL(readML1Page, pkt_count, mem_intr);
+        // A full 4KB migration read can be forwarded from writes already in
+        // the controller.  In that case the helper completed it directly.
+        if (!sign && !nextReqEvent.scheduled()) {
+            schedule(nextReqEvent, curTick());
+        }
+    } else {
+        assert(readML1InWait == nullptr);
+        readML1InWait = readML1Page;
+    }
+
+    return false;
+}
+
+void
+MemCtrl::replayBlockedRequestsForDyL(MemInterface* mem_intr)
+{
+    blockedForDyL = false;
+    for (auto it = blockedQueueForDyL.begin(); it != blockedQueueForDyL.end(); ) {
+        if (blockedForDyL) {
+            break;
+        }
+        if ((*it)->DyLPType == 0x100) {
+            if (((*it)->DyLBackup >> 12) == pageInCompress.first) {
+                pageInCompress.second = true;
+            }
+            inProcessPkts.emplace_back((*it));
+        } else {
+            unsigned size = (*it)->getSize();
+            uint32_t burst_size = dram->bytesPerBurst();
+            unsigned offset = (*it)->getAddr() & (burst_size - 1);
+            unsigned int pkt_count = divCeil(offset + size, burst_size);
+            blockedNumForDyL -= pkt_count;
+            bool isAccept = recvTimingReqLogicForDyL((*it), true);
+            assert(isAccept);
+        }
+        it = blockedQueueForDyL.erase(it);
+    }
+}
+
+void
+MemCtrl::resumeOriginAccessForDyL(PacketPtr aux_pkt, MemInterface* mem_intr)
+{
+    PPN origin_ppn = aux_pkt->DyLBackup >> 12;
+    auto it = uncompressedLocationForDyL.find(origin_ppn);
+    panic_if(it == uncompressedLocationForDyL.end(),
+             "DyLeCT could not find resumed page %#llx in uncompressed map",
+             origin_ppn);
+
+    // The access that started the ML0 migration has already updated this
+    // page's promotion counter.  At this point the migration (or an ML2 to
+    // ML1 decompression) has committed its CTE and location-map updates, so
+    // this is a resume, not a new translation.  Calling
+    // translateAddrForDyLTiming() here would increment the counter a second
+    // time and can enqueue another ML0 migration before this request has even
+    // reached DRAM.
+    Addr dram_addr = it->second |
+        (aux_pkt->DyLBackup & ((1ULL << 12) - 1));
+
+    aux_pkt->setAddr(dram_addr);
+
+    unsigned pkt_size = aux_pkt->getSize();
+    uint32_t burst_size = mem_intr->bytesPerBurst();
+    unsigned pkt_offset = aux_pkt->getAddr() & (burst_size - 1);
+    unsigned int pkt_count = divCeil(pkt_offset + pkt_size, burst_size);
+
+    if (aux_pkt->isRead()) {
+        stats.readReqs++;
+        stats.bytesReadSys += pkt_size;
+        if (!addToReadQueueForDyL(aux_pkt, pkt_count, dram)) {
+            if (!nextReqEvent.scheduled()) {
+                schedule(nextReqEvent, curTick());
+            }
+        }
+    } else {
+        addToWriteQueueForDyL(aux_pkt, pkt_count, dram);
+        stats.writeReqs++;
+        stats.bytesWrittenSys += pkt_size;
+        if (!nextReqEvent.scheduled()) {
+            schedule(nextReqEvent, curTick());
+        }
+    }
+}
+
+Addr
+MemCtrl::applyML0PolicyForDyL(PPN ppn, Addr page_dram_addr,
+                              MemInterface* mem_intr,
+                              bool allowMigration)
+{
+    if (page_group_num == 0) {
+        registerUncompressedPageForDyL(ppn, page_dram_addr);
+        return page_dram_addr;
+    }
+
+    uint64_t group_idx = ppn % page_group_num;
+    auto& page_group = pageGroups[group_idx];
+    const uint64_t epoch = ++dylectAccessEpoch;
+    page_group.ageAccessCounts(epoch, dylectAccessDecayInterval);
+    uint8_t ml0_pos = 0;
+    // Fast path: the page is already resident in ML0, so just refresh the
+    // hotness counter and return the fixed ML0 slot address.
+    if (page_group.findML0Page(ppn, ml0_pos)) {
+        page_group.updateAccessCntForML0(ppn, epoch);
+        Addr ml0_addr = page_group.baseAddr + static_cast<Addr>(ml0_pos) * 4096;
+        printf("[DyL][ML0-HIT] ppn=%llu group=%llu pos=%u addr=0x%llx accessCnt=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned>(ml0_pos),
+            static_cast<unsigned long long>(ml0_addr),
+            page_group.getAccessCnt(ppn));
+        registerUncompressedPageForDyL(ppn, ml0_addr);
+        return ml0_addr;
+    }
+
+    // Pages not in ML0 accumulate accesses in the per-group tracker. Once the
+    // counter crosses the promotion threshold, we migrate the page into ML0.
+    page_group.updateAccessCnt(ppn, epoch);
+    uint32_t access_cnt = page_group.getAccessCnt(ppn);
+    printf("[DyL][ML0-TRACK] ppn=%llu group=%llu ml1_addr=0x%llx accessCnt=%u threshold=%llu ml0Used=%u\n",
+        static_cast<unsigned long long>(ppn),
+        static_cast<unsigned long long>(group_idx),
+        static_cast<unsigned long long>(page_dram_addr),
+        access_cnt,
+        static_cast<unsigned long long>(thresholdForPromotion),
+        static_cast<unsigned>(page_group.getNumOSPageInML0()));
+    registerUncompressedPageForDyL(ppn, page_dram_addr);
+    if (access_cnt < thresholdForPromotion) {
+        return page_dram_addr;
+    }
+
+    // In timing mode we only track hotness for now. Real page migration can
+    // race with in-flight requests and corrupt the mapping state.
+    if (!allowMigration) {
+        printf("[DyL][ML0-SKIP-TIMING] ppn=%llu group=%llu addr=0x%llx accessCnt=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned long long>(page_dram_addr),
+            access_cnt);
+        return page_dram_addr;
+    }
+
+    uint8_t target_pos = 0xFF;
+    // ML0 is full: evict the coldest ML0 page back to ML1 first.
+    if (page_group.getNumOSPageInML0() == 3) {
+        target_pos = page_group.getVictimPageLoc();
+        PPN victim_ppn = page_group.getVictimPageNum(target_pos);
+        Addr victim_old_addr =
+            page_group.baseAddr + static_cast<Addr>(target_pos) * 4096;
+        Addr victim_new_addr = allocateML1PageForDyL();
+        printf("[DyL][ML0-EVICT] victim_ppn=%llu group=%llu pos=%u old=0x%llx new=0x%llx victimAccess=%u\n",
+            static_cast<unsigned long long>(victim_ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned>(target_pos),
+            static_cast<unsigned long long>(victim_old_addr),
+            static_cast<unsigned long long>(victim_new_addr),
+            page_group.getAccessCnt(victim_ppn));
+        relocateUncompressedPageForDyL(victim_ppn, victim_old_addr,
+                                       victim_new_addr, mem_intr);
+        updateMetaDataForDyL(victim_ppn, victim_new_addr, 1, mem_intr);
+        page_group.removeOSPageFromML0(target_pos);
+        // A victim starts cold in ML1; retaining its ML0 hotness makes it
+        // immediately re-promote and causes ML0/ML1 ping-pong.
+        page_group.seedAccessCnt(victim_ppn, 0, epoch);
+    } else {
+        for (uint8_t pos = 0; pos < 3; ++pos) {
+            if (page_group.osPagesInML0.count(pos) == 0) {
+                target_pos = pos;
+                break;
+            }
+        }
+        assert(target_pos < 3);
+        printf("[DyL][ML0-FILL] ppn=%llu group=%llu chooseEmptyPos=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned>(target_pos));
+    }
+
+    Addr target_addr =
+        page_group.baseAddr + static_cast<Addr>(target_pos) * 4096;
+
+    auto owner_it = uncompressedOwnerForDyL.find(target_addr);
+    if (owner_it != uncompressedOwnerForDyL.end() && owner_it->second != ppn) {
+        PPN occupant_ppn = owner_it->second;
+        Addr occupant_new_addr = allocateML1PageForDyL();
+        printf("[DyL][ML0-DISPLACE] occupant_ppn=%llu targetPos=%u ml0_addr=0x%llx new_ml1=0x%llx\n",
+            static_cast<unsigned long long>(occupant_ppn),
+            static_cast<unsigned>(target_pos),
+            static_cast<unsigned long long>(target_addr),
+            static_cast<unsigned long long>(occupant_new_addr));
+        relocateUncompressedPageForDyL(occupant_ppn, target_addr,
+                                       occupant_new_addr, mem_intr);
+        updateMetaDataForDyL(occupant_ppn, occupant_new_addr, 1, mem_intr);
+    } else if (page_dram_addr != target_addr) {
+        bool removed = removePageFromFreeListForDyL(target_addr);
+        panic_if(!removed,
+                 "DyLeCT ML0 slot %#llx is neither free nor tracked",
+                 target_addr);
+    }
+
+    // Finally migrate the promoted page into the chosen ML0 slot and encode
+    // the short CTE so future accesses can hit in pre-gather.
+    if (page_dram_addr != target_addr) {
+        printf("[DyL][ML0-PROMOTE] ppn=%llu group=%llu old=0x%llx new=0x%llx pos=%u accessCnt=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned long long>(page_dram_addr),
+            static_cast<unsigned long long>(target_addr),
+            static_cast<unsigned>(target_pos),
+            access_cnt);
+        relocateUncompressedPageForDyL(ppn, page_dram_addr, target_addr,
+                                       mem_intr);
+    } else {
+        printf("[DyL][ML0-PIN] ppn=%llu group=%llu addr=0x%llx pos=%u accessCnt=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(group_idx),
+            static_cast<unsigned long long>(target_addr),
+            static_cast<unsigned>(target_pos),
+            access_cnt);
+        registerUncompressedPageForDyL(ppn, target_addr);
+    }
+
+    page_group.removePage(ppn);
+    page_group.addNewOSPageToML0(target_pos, ppn, access_cnt, epoch);
+    updateMetaDataForDyL(ppn, target_addr, 0, mem_intr, 0, target_pos);
+    return target_addr;
 }
 
     /**
@@ -4743,10 +5333,19 @@ MemCtrl::parsePageInfoForDyL(const std::vector<uint8_t>& cte, uint32_t ofs, uint
         assert(target_byte < 64);
         uint8_t oft_within_byte = ofs % 8;
         assert(ofs % 2 == 0);
-        uint8_t short_cte = (cte[target_byte] >> (6 - oft_within_byte)) & 0x11;
-        Addr base_addr_for_page_group = realStartAddr + 3 * (ppn % page_group_num);
-        addr = base_addr_for_page_group + (short_cte - 1) * 4096;
+        uint8_t short_cte = (cte[target_byte] >> (6 - oft_within_byte)) & 0x3;
+        panic_if(short_cte == 0, "invalid pre-gather entry for ppn %lld", ppn);
+        Addr base_addr_for_page_group =
+            realStartAddr + 3 * 4096 * (ppn % page_group_num);
+        addr = base_addr_for_page_group + static_cast<Addr>(short_cte - 1) * 4096;
         compressed_size = 4096;
+        printf("[DyL][PG-READ] ppn=%llu oft=%u rawByte=0x%02x short=%u base=0x%llx addr=0x%llx\n",
+            static_cast<unsigned long long>(ppn),
+            ofs,
+            static_cast<unsigned>(cte[target_byte]),
+            static_cast<unsigned>(short_cte),
+            static_cast<unsigned long long>(base_addr_for_page_group),
+            static_cast<unsigned long long>(addr));
     } else {
         panic("wrong mode for parsing page info for DyLeCT");
     }
@@ -4951,8 +5550,17 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                         assert(cacheHit == 2);
                         pageInfo = parsePageInfoForDyL(cteBlock, preGatherOft, cacheHit, ppn);
                     }
-                    Addr dram_page_addr = pageInfo.first;
-                    Addr dram_addr = dram_page_addr | (auxPkt->getAddr() & ((1ULL << 12) - 1));
+                    Addr dram_addr = 0;
+                    if (!translateAddrForDyLTiming(auxPkt, pageInfo.first,
+                                                   dram_addr, dram)) {
+                        return true;
+                    }
+                    printf("[DyL][WRITE-MAP] ppn=%llu cacheHit=%u page_addr=0x%llx final_addr=0x%llx vaddr=0x%llx\n",
+                        static_cast<unsigned long long>(ppn),
+                        static_cast<unsigned>(cacheHit),
+                        static_cast<unsigned long long>(dram_addr & ~((1ULL << 12) - 1)),
+                        static_cast<unsigned long long>(dram_addr),
+                        static_cast<unsigned long long>(auxPkt->DyLBackup));
                     auxPkt->setAddr(dram_addr);
 
                     addToWriteQueueForDyL(auxPkt, pkt_count, dram);
@@ -5071,9 +5679,18 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
                         assert(cacheHit == 2);
                         pageInfo = parsePageInfoForDyL(cteBlock, preGatherOft, cacheHit, ppn);
                     }
-                    Addr dram_page_addr = pageInfo.first;
-                    Addr dram_addr = dram_page_addr | (auxPkt->getAddr() & ((1ULL << 12) - 1));
+                    Addr dram_addr = 0;
+                    if (!translateAddrForDyLTiming(auxPkt, pageInfo.first,
+                                                   dram_addr, dram)) {
+                        return true;
+                    }
 
+                    printf("[DyL][READ-MAP] ppn=%llu cacheHit=%u page_addr=0x%llx final_addr=0x%llx vaddr=0x%llx\n",
+                        static_cast<unsigned long long>(ppn),
+                        static_cast<unsigned>(cacheHit),
+                        static_cast<unsigned long long>(dram_addr & ~((1ULL << 12) - 1)),
+                        static_cast<unsigned long long>(dram_addr),
+                        static_cast<unsigned long long>(auxPkt->DyLBackup));
                     printf("the page is not compressed , dram address is 0x%lx\n", dram_addr);
                     auxPkt->setAddr(dram_addr);
 
@@ -6838,10 +7455,20 @@ MemCtrl::updatePreGatherForDyL(uint64_t ppn, MemInterface* mem_intr, uint8_t loc
     uint8_t masked_val = mask & val;
 
     if (loc < 4) {
-        mask = (loc & 0b11) << (6 - oft_within_byte);
+        // Pre-gather stores 2-bit short CTEs:
+        // 00 invalid, 01/10/11 -> ML0 slot 0/1/2 respectively.
+        assert(loc < 3);
+        mask = ((loc + 1) & 0b11) << (6 - oft_within_byte);
         masked_val = mask | masked_val;
     }
     cacheEntry[target_byte] = masked_val;
+    printf("[DyL][PG-WRITE] ppn=%llu preGatherAddr=0x%llx oft=%u loc=%u encoded=%u rawByte=0x%02x\n",
+        static_cast<unsigned long long>(ppn),
+        static_cast<unsigned long long>(preGatherAddrAligned),
+        preGatherOft,
+        static_cast<unsigned>(loc),
+        static_cast<unsigned>(loc < 4 ? loc + 1 : 0),
+        static_cast<unsigned>(cacheEntry[target_byte]));
     mcache.updateIfExist(preGatherAddrAligned, cacheEntry);
     mem_intr->atomicWrite(cacheEntry, preGatherAddrAligned, 64);
 }
@@ -7059,7 +7686,6 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         // printf("the blocked pkt size is %d\n", blockedQueueForDyL.size());
         // printf("readCompressInWait is 0x%llx\n", readCompressInWait);
         if (inProcessPkts.size() == 1 && readCompressInWait) {
-            
             PacketPtr readCompress = readCompressInWait;
             assert (*inProcessPkts.begin() == readCompress->DyLCandidate);
             readCompressInWait = nullptr;
@@ -7076,9 +7702,24 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             }
         }
 
+        if (inProcessPkts.size() == 1 && readML1InWait) {
+            PacketPtr readML1Page = readML1InWait;
+            assert(*inProcessPkts.begin() == readML1Page->DyLCandidate);
+            readML1InWait = nullptr;
+            uint32_t burst_size = mem_intr->bytesPerBurst();
+            unsigned offset = readML1Page->getAddr() & (burst_size - 1);
+            unsigned int pkt_count =
+                divCeil(offset + readML1Page->getSize(), burst_size);
+            if (!addToReadQueueForDyL(readML1Page, pkt_count, dram) &&
+                !nextReqEvent.scheduled()) {
+                schedule(nextReqEvent, curTick());
+            }
+        }
+
         // TODO(lcf)
         printf("try to handle cold page, the current compressColdPageInProcess is %d\n", compressColdPageInProcess);
-        if (!compressColdPageInProcess) {
+        if (!compressColdPageInProcess && !blockedForDyL &&
+            !pendingML0MigrationForDyL.valid()) {
             compressColdPage(pkt, mem_intr);
         }
 
@@ -7163,6 +7804,115 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             schedule(nextReqEvent, curTick());
         }     
 
+    } else if (packet_type == 0x200) {
+        /* readML1Page */
+        PacketPtr aux_pkt = pkt->DyLCandidate;
+        assert(pendingML0MigrationForDyL.valid());
+        assert(pendingML0MigrationForDyL.auxPkt == aux_pkt);
+        assert(pkt->getAddr() == pendingML0MigrationForDyL.sourceAddr);
+        assert(pkt->getSize() == 4096);
+
+        std::vector<uint8_t> page(4096, 0);
+        mem_intr->atomicRead(page.data(), pkt->getAddr(), 4096);
+        stats.memToCPUMigrationBytes += 4096;
+        printf("[DyL][ML0-READ] ppn=%llu src=0x%llx dst=0x%llx\n",
+            static_cast<unsigned long long>(pendingML0MigrationForDyL.ppn),
+            static_cast<unsigned long long>(pkt->getAddr()),
+            static_cast<unsigned long long>(pendingML0MigrationForDyL.targetAddr));
+
+        PacketPtr writeML0Page = new Packet(aux_pkt);
+        aux_pkt->ref_cnt++;
+        writeML0Page->configAsWriteML0Page(
+            pendingML0MigrationForDyL.targetAddr, aux_pkt, page,
+            pendingML0MigrationForDyL.ppn);
+
+        tryDeletePktForDyL(pkt);
+
+        uint32_t burst_size = mem_intr->bytesPerBurst();
+        unsigned offset = writeML0Page->getAddr() & (burst_size - 1);
+        unsigned int pkt_count = divCeil(offset + writeML0Page->getSize(),
+                                         burst_size);
+        addToWriteQueueForDyL(writeML0Page, pkt_count, mem_intr);
+        if (!nextReqEvent.scheduled()) {
+            schedule(nextReqEvent, curTick());
+        }
+
+    } else if (packet_type == 0x400) {
+        /* writeML0Page */
+        PacketPtr aux_pkt = pkt->DyLCandidate;
+        assert(pendingML0MigrationForDyL.valid());
+        assert(pendingML0MigrationForDyL.auxPkt == aux_pkt);
+        assert(pkt->getAddr() == pendingML0MigrationForDyL.targetAddr);
+
+        PPN ppn = pendingML0MigrationForDyL.ppn;
+        Addr source_addr = pendingML0MigrationForDyL.sourceAddr;
+        Addr target_addr = pendingML0MigrationForDyL.targetAddr;
+        uint8_t target_pos = pendingML0MigrationForDyL.targetPos;
+        auto& page_group = pageGroups[ppn % page_group_num];
+        const uint64_t migration_epoch = ++dylectAccessEpoch;
+        page_group.ageAccessCounts(migration_epoch, dylectAccessDecayInterval);
+        uint32_t access_cnt = page_group.getAccessCnt(ppn);
+
+        auto owner_it = uncompressedOwnerForDyL.find(target_addr);
+        if (owner_it != uncompressedOwnerForDyL.end() && owner_it->second != ppn) {
+            PPN victim_ppn = owner_it->second;
+            uint8_t victim_pos = 0xFF;
+            if (((victim_ppn % page_group_num) != (ppn % page_group_num)) ||
+                !page_group.findML0Page(victim_ppn, victim_pos) ||
+                victim_pos != target_pos) {
+                printf("[DyL][ML0-CANCEL-STALE] ppn=%llu victim=%llu target=0x%llx expectedPos=%u foundPos=%u\n",
+                    static_cast<unsigned long long>(ppn),
+                    static_cast<unsigned long long>(victim_ppn),
+                    static_cast<unsigned long long>(target_addr),
+                    static_cast<unsigned>(target_pos),
+                    static_cast<unsigned>(victim_pos));
+                pendingML0MigrationForDyL.reset();
+                replayBlockedRequestsForDyL(mem_intr);
+                resumeOriginAccessForDyL(aux_pkt, mem_intr);
+                tryDeletePktForDyL(pkt);
+                return;
+            }
+            Addr victim_new_addr = allocateML1PageForDyL();
+            relocateUncompressedPageForDyL(victim_ppn, target_addr,
+                                           victim_new_addr, mem_intr);
+            updateMetaDataForDyL(victim_ppn, victim_new_addr, 1, mem_intr);
+            page_group.removeOSPageFromML0(target_pos);
+            page_group.seedAccessCnt(victim_ppn, 0, migration_epoch);
+        } else if (source_addr != target_addr) {
+            bool removed = removePageFromFreeListForDyL(target_addr);
+            panic_if(!removed,
+                     "DyLeCT ML0 slot %#llx is neither free nor tracked",
+                     target_addr);
+        }
+
+        std::vector<uint8_t> page(4096, 0);
+        memcpy(page.data(), pkt->getPtr<uint8_t>(), 4096);
+        mem_intr->atomicWrite(page, target_addr, 4096);
+        stats.cpuToMemMigrationBytes += 4096;
+        printf("[DyL][ML0-WRITE] ppn=%llu src=0x%llx dst=0x%llx pos=%u\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(source_addr),
+            static_cast<unsigned long long>(target_addr),
+            static_cast<unsigned>(target_pos));
+
+        if (source_addr != target_addr) {
+            freeList.push_back(source_addr);
+        }
+
+        registerUncompressedPageForDyL(ppn, target_addr);
+        page_group.removePage(ppn);
+        page_group.addNewOSPageToML0(target_pos, ppn, access_cnt,
+                                      migration_epoch);
+        updateMetaDataForDyL(ppn, target_addr, 0, mem_intr, 0, target_pos);
+
+        pendingML0MigrationForDyL.reset();
+        printf("[DyL][ML0-WAKE] ppn=%llu blocked=%llu\n",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(blockedQueueForDyL.size()));
+        replayBlockedRequestsForDyL(mem_intr);
+        resumeOriginAccessForDyL(aux_pkt, mem_intr);
+        tryDeletePktForDyL(pkt);
+
     } else if (packet_type == 0x8) {
         /* writeUncompressed */
         PacketPtr aux_pkt = pkt->DyLCandidate;
@@ -7171,6 +7921,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         /* step 1: update the CTE for this page */
         /* the page is ML2 -> ML1 */
         updateMetaDataForDyL(origin_ppn, pkt->getAddr(), 1, mem_intr);
+        registerUncompressedPageForDyL(origin_ppn, pkt->getAddr());
 
         /* step 2: write the data to memory */
         std::vector<uint8_t> page(4096);
@@ -7179,31 +7930,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         
         /* step 3: reset the waitForDecompress */
         waitForDecompress = std::make_pair(nullptr, 0);
-        blockedForDyL = false;
-        printf("set the blockedForDyL to false\n");
-        for (auto it = blockedQueueForDyL.begin(); it != blockedQueueForDyL.end(); ) {
-            if (blockedForDyL) {
-                break;
-            }
-            if ((*it)->DyLPType == 0x100) {
-                printf("DyLPType is 0x100\n");
-                if (((*it)->DyLBackup >> 12) == pageInCompress.first) {
-                    pageInCompress.second = true;
-                }
-                inProcessPkts.emplace_back((*it));
-            } else {
-                unsigned size = (*it)->getSize();
-                uint32_t burst_size = dram->bytesPerBurst();
-
-                unsigned offset = pkt->getAddr() & (burst_size - 1);
-                unsigned int pkt_count = divCeil(offset + size, burst_size);
-                blockedNumForDyL -= pkt_count;
-
-                bool isAccept = recvTimingReqLogicForDyL((*it), true);
-                assert (isAccept);
-            }
-            it = blockedQueueForDyL.erase(it);
-        }
+        replayBlockedRequestsForDyL(mem_intr);
 
         // for (auto &origin_pkt: blockedQueueForDyL) {
         //     if (blockedForDyL) {
@@ -7226,40 +7953,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         /* step 4: process current pkt */
 
         /* translate the dram address */
-        Addr page_dram_addr = pkt->getAddr();
-        Addr real_addr = page_dram_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
-        
-        aux_pkt->setAddr(real_addr);
-
-        unsigned pkt_size = aux_pkt->getSize();
-        assert(aux_pkt->DyLPType == 0x2);
-        assert(pkt_size == aux_pkt->DyLCandidate->getSize());
-        uint32_t burst_size = mem_intr->bytesPerBurst();
-
-        unsigned pkt_offset = aux_pkt->getAddr() & (burst_size - 1);
-        unsigned int pkt_count = divCeil(pkt_offset + pkt_size, burst_size);
-
-        if (aux_pkt->isRead()) {
-            stats.readReqs++;
-            stats.bytesReadSys += pkt_size;
-            if (!addToReadQueueForDyL(aux_pkt, pkt_count, dram)) {
-                // If we are not already scheduled to get a request out of the
-                // queue, do so now
-                if (!nextReqEvent.scheduled()) {
-                    DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                    schedule(nextReqEvent, curTick());
-                }
-            }
-        } else {
-            addToWriteQueueForDyL(aux_pkt, pkt_count, dram);
-            stats.writeReqs++;
-            stats.bytesWrittenSys += pkt_size;
-
-            if (!nextReqEvent.scheduled()) {
-                DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
-                schedule(nextReqEvent, curTick());
-            }
-        }
+        resumeOriginAccessForDyL(aux_pkt, mem_intr);
 
     } else if (packet_type == 0x10) {
         /* readColdPage */
@@ -7331,6 +8025,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         // printf("compress cold page: %ld\n", coldPagePPN);
         // printf("new addr is 0x%llx\n", newAddr);
         // printf("cSize is %d\n", cSize);
+        clearML0TrackingForDyL(coldPagePPN);
+        unregisterUncompressedPageForDyL(coldPagePPN);
         updateMetaDataForDyL(coldPagePPN, newAddr, 2, mem_intr, cSize);
 
         /* create a writeColdPage and add to queue */
@@ -7402,8 +8098,17 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         if (hitInPreGatherTable) {
             std::pair<Addr, uint32_t> pageInfo = parsePageInfoForDyL(preGatherBlock, preGatherOft, 2, ppn);
             /* translate the addr */
-            Addr dram_page_addr = pageInfo.first;
-            Addr dram_addr = dram_page_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+            Addr dram_addr = 0;
+            if (!translateAddrForDyLTiming(aux_pkt, pageInfo.first,
+                                           dram_addr, mem_intr)) {
+                tryDeletePktForDyL(pkt);
+                return;
+            }
+            printf("[DyL][READCTE-PG-HIT] ppn=%llu page_addr=0x%llx final_addr=0x%llx vaddr=0x%llx\n",
+                static_cast<unsigned long long>(ppn),
+                static_cast<unsigned long long>(dram_addr & ~((1ULL << 12) - 1)),
+                static_cast<unsigned long long>(dram_addr),
+                static_cast<unsigned long long>(aux_pkt->DyLBackup));
             aux_pkt->setAddr(dram_addr);
 
             unsigned offset = aux_pkt->getAddr() & (burst_size - 1);
@@ -7447,6 +8152,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 std::vector<uint8_t> zeroPage(4096, 0);
                 mem_intr->atomicWrite(zeroPage, dram_addr, 4096, 0);
                 updateMetaDataForDyL(ppn, dram_addr, 1, mem_intr);
+                registerUncompressedPageForDyL(ppn, dram_addr);
                 mem_intr->atomicRead(cteBlock.data(), cteAddrAligned, 64);
                 // print_hex_printf(cteBlock);
             } else {
@@ -7500,9 +8206,18 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
 
             } else {
                 /* translate the addr */
-                Addr dram_page_addr = pageInfo.first;
-                Addr dram_addr = dram_page_addr | (aux_pkt->getAddr() & ((1ULL << 12) - 1));
+                Addr dram_addr = 0;
+                if (!translateAddrForDyLTiming(aux_pkt, pageInfo.first,
+                                               dram_addr, mem_intr)) {
+                    tryDeletePktForDyL(pkt);
+                    return;
+                }
 
+                printf("[DyL][READCTE-CTE-HIT] ppn=%llu page_addr=0x%llx final_addr=0x%llx vaddr=0x%llx\n",
+                    static_cast<unsigned long long>(ppn),
+                    static_cast<unsigned long long>(dram_addr & ~((1ULL << 12) - 1)),
+                    static_cast<unsigned long long>(dram_addr),
+                    static_cast<unsigned long long>(aux_pkt->DyLBackup));
                 printf("the dram addr is %llx\n", dram_addr);
                 aux_pkt->setAddr(dram_addr);
 
@@ -9197,11 +9912,20 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         if(waitForDecompress.first) {
             assert(inProcessPkts.size() == 1);
             if (curTick() >= waitForDecompress.second) {
-                afterDecompForDyL(waitForDecompress.first, mem_intr);
-                waitForDecompress.first = nullptr;
-            }
-
-            if(mem_intr->readQueueSize == 0) {
+                // Consume this completion before invoking the callback.
+                // afterDecompForDyL can synchronously replay blocked requests;
+                // that replay may start another decompression and install a
+                // new waitForDecompress entry.  Clearing the field after the
+                // callback used to erase that new entry and strand its sole
+                // in-process request with no DRAM work queued.
+                PacketPtr completed_pkt = waitForDecompress.first;
+                waitForDecompress = std::make_pair(nullptr, 0);
+                afterDecompForDyL(completed_pkt, mem_intr);
+                // afterDecompForDyL may have enqueued writeUncompress.  Do
+                // not take the waiting-path return below: doing so can leave
+                // that write stranded when this is the last scheduled event.
+            } else if (mem_intr->readQueueSize == 0 &&
+                       mem_intr->writeQueueSize == 0) {
                 Tick targetTick = waitForDecompress.second;
                 if (!next_req_event.scheduled()) {
                     schedule(next_req_event, std::max(mem_intr->nextReqTime, targetTick));
@@ -9214,6 +9938,54 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
                 }
                 return;
             }
+        }
+
+        // A compressed-page read or ML1-to-ML0 copy can be deferred while
+        // another DyLeCT request is in flight.  The old implementation only
+        // retried it from the normal-request completion path.  Recheck here
+        // as well so an immediate write-queue completion cannot strand the
+        // deferred packet with both DRAM queues empty.
+        if (inProcessPkts.size() == 1 && readCompressInWait) {
+            PacketPtr readCompress = readCompressInWait;
+            assert(*inProcessPkts.begin() == readCompress->DyLCandidate);
+            readCompressInWait = nullptr;
+            uint32_t burst_size = mem_intr->bytesPerBurst();
+            unsigned offset = readCompress->getAddr() & (burst_size - 1);
+            unsigned int pkt_count =
+                divCeil(offset + readCompress->getSize(), burst_size);
+            bool sign = addToReadQueueForDyL(readCompress, pkt_count, mem_intr);
+            if (!sign && !next_req_event.scheduled()) {
+                schedule(next_req_event, curTick());
+            }
+            return;
+        }
+
+        if (inProcessPkts.size() == 1 && readML1InWait) {
+            PacketPtr readML1Page = readML1InWait;
+            assert(*inProcessPkts.begin() == readML1Page->DyLCandidate);
+            readML1InWait = nullptr;
+            uint32_t burst_size = mem_intr->bytesPerBurst();
+            unsigned offset = readML1Page->getAddr() & (burst_size - 1);
+            unsigned int pkt_count =
+                divCeil(offset + readML1Page->getSize(), burst_size);
+            bool sign = addToReadQueueForDyL(readML1Page, pkt_count, mem_intr);
+            if (!sign && !next_req_event.scheduled()) {
+                schedule(next_req_event, curTick());
+            }
+            return;
+        }
+
+        // This state has no outstanding work that can release the DyLeCT
+        // block.  It is safe to wake the externally blocked requests rather
+        // than leaving the controller permanently idle.
+        if (blockedForDyL && !blockedQueueForDyL.empty() &&
+            inProcessPkts.empty() && !pendingML0MigrationForDyL.valid() &&
+            !waitForDecompress.first && !readCompressInWait &&
+            !readML1InWait && mem_intr->readQueueSize == 0 &&
+            mem_intr->writeQueueSize == 0) {
+            warn("DyLeCT recovered an idle blocked queue at tick %llu\n",
+                 static_cast<unsigned long long>(curTick()));
+            replayBlockedRequestsForDyL(mem_intr);
         }
 
         // std::vector<PacketPtr> keys_to_erase;
@@ -9315,6 +10087,14 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
             (mem_intr->busState==MemCtrl::READ)?"READ":"WRITE",
             switched_cmd_type?"[turnaround triggered]":"");
         printf("the current waitQueue size is %d\n", blockedQueueForDyL.size());
+        printf("DyLeCT state: blocked=%d inProcess=%llu pendingML0=%d "
+               "waitDecomp=%d readCompressWait=%d readML1Wait=%d\n",
+            blockedForDyL,
+            static_cast<unsigned long long>(inProcessPkts.size()),
+            pendingML0MigrationForDyL.valid(),
+            waitForDecompress.first != nullptr,
+            readCompressInWait != nullptr,
+            readML1InWait != nullptr);
         // printf("the current pkt in blocked queue is %d\n", blockPktQueue.size());
         printf("the read size queue is %d\n", mem_intr->readQueueSize);
         printf("the write queue size is %d\n", mem_intr->writeQueueSize);
@@ -11170,6 +11950,10 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     if (mcache.isExist(cteAddrAligned)) {
         mcache.updateIfExist(cteAddrAligned, cacheLine);
     }
+
+    // Functional accesses are used for inspection/debugging and do not count
+    // as simulated references.  In particular, they must not update ML0
+    // residency, access counters, or replacement state.
 
 
     /*

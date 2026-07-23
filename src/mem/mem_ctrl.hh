@@ -47,6 +47,7 @@
 #define __MEM_CTRL_HH__
 
 #include <deque>
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -689,6 +690,33 @@ class MemCtrl : public qos::MemCtrl
           return _sz == _capacity;
         }
 
+        void checkpointEntries(std::vector<Addr> &addrs,
+                               std::vector<uint8_t> &bytes) const {
+          addrs.clear();
+          bytes.clear();
+          for (ListNode *node = header->succ; node != tailer;
+               node = node->succ) {
+            addrs.push_back(node->addr);
+            bytes.insert(bytes.end(), node->cacheLine.begin(),
+                         node->cacheLine.end());
+          }
+        }
+
+        void restoreEntries(const std::vector<Addr> &addrs,
+                            const std::vector<uint8_t> &bytes) {
+          assert(bytes.size() == addrs.size() * 64);
+          while (header->succ != tailer) {
+            remove();
+          }
+          // add() inserts at MRU.  Reinsert LRU-to-MRU to retain the
+          // replacement order present at checkpoint time.
+          for (size_t i = addrs.size(); i != 0; --i) {
+            std::vector<uint8_t> line(bytes.begin() + (i - 1) * 64,
+                                      bytes.begin() + i * 64);
+            add(addrs[i - 1], line);
+          }
+        }
+
         Addr lastElemAddr() {
           ListNode* target = tailer->prev;
           assert (target != header);
@@ -848,6 +876,7 @@ class MemCtrl : public qos::MemCtrl
     struct AccessCntInfo {
       uint64_t PPN;
       uint32_t accessCnt;
+      uint64_t lastAccessEpoch;
     };
     
     class PageGroupInfo {
@@ -859,18 +888,22 @@ class MemCtrl : public qos::MemCtrl
       // p: os page number (i.e. PPN)
       public:
 
-        PageGroupInfo(uint64_t addr = 0): baseAddr(addr) {}
+        PageGroupInfo(uint64_t addr = 0): baseAddr(addr), numOSPageInML0(0) {}
 
         std::unordered_map<uint8_t, AccessCntInfo> osPagesInML0;
 
         uint64_t baseAddr;
 
-        void updateAccessCntForML0(uint64_t PPN) {
+        void updateAccessCntForML0(uint64_t PPN, uint64_t epoch) {
           bool find_target_page = false;
           for (auto &pair: osPagesInML0) {
             if (pair.second.PPN == PPN) {
               find_target_page = true;
-              pair.second.accessCnt += 1;
+              if (pair.second.accessCnt !=
+                  std::numeric_limits<uint32_t>::max()) {
+                pair.second.accessCnt += 1;
+              }
+              pair.second.lastAccessEpoch = epoch;
             }
           }
           if (!find_target_page) {
@@ -878,16 +911,48 @@ class MemCtrl : public qos::MemCtrl
           }
         }
 
-        void updateAccessCnt(uint64_t PPN) {
+        void updateAccessCnt(uint64_t PPN, uint64_t epoch) {
           uint32_t access_cnt = 0;
           if (_pos.count(PPN)) {
             access_cnt = _pos[PPN]->accessCnt;
             _s.erase(_pos[PPN]);
           }
 
-          access_cnt += 1;
-          auto it = _s.insert(AccessCntInfo{PPN, access_cnt}).first;
+          if (access_cnt != std::numeric_limits<uint32_t>::max()) {
+            access_cnt += 1;
+          }
+          auto it = _s.insert(AccessCntInfo{PPN, access_cnt, epoch}).first;
           _pos[PPN] = it;
+        }
+
+        void ageAccessCounts(uint64_t epoch, uint64_t decay_interval) {
+          assert(decay_interval != 0);
+          for (auto &pair : osPagesInML0) {
+            auto &entry = pair.second;
+            uint64_t periods = (epoch - entry.lastAccessEpoch) / decay_interval;
+            if (periods != 0) {
+              entry.accessCnt >>= std::min<uint64_t>(periods, 31);
+              entry.lastAccessEpoch = epoch;
+            }
+          }
+
+          std::vector<AccessCntInfo> aged_pages;
+          aged_pages.reserve(_s.size());
+          for (const auto &entry : _s) {
+            AccessCntInfo aged = entry;
+            uint64_t periods = (epoch - aged.lastAccessEpoch) / decay_interval;
+            if (periods != 0) {
+              aged.accessCnt >>= std::min<uint64_t>(periods, 31);
+              aged.lastAccessEpoch = epoch;
+            }
+            aged_pages.push_back(aged);
+          }
+          _s.clear();
+          _pos.clear();
+          for (const auto &entry : aged_pages) {
+            auto it = _s.insert(entry).first;
+            _pos[entry.PPN] = it;
+          }
         }
 
         bool isEmpty() {
@@ -907,6 +972,20 @@ class MemCtrl : public qos::MemCtrl
 
         bool OSPageInML0() {
           return numOSPageInML0 != 0;
+        }
+
+        uint8_t getNumOSPageInML0() const {
+          return numOSPageInML0;
+        }
+
+        bool findML0Page(uint64_t PPN, uint8_t& pos) const {
+          for (const auto& pair: osPagesInML0) {
+            if (pair.second.PPN == PPN) {
+              pos = pair.first;
+              return true;
+            }
+          }
+          return false;
         }
 
         uint8_t getVictimPageLoc() {
@@ -946,11 +1025,47 @@ class MemCtrl : public qos::MemCtrl
             panic("could not find target PPN %d in current page group", PPN);
         }
 
-        void addNewOSPageToML0(uint8_t pos, uint64_t PPN, uint32_t accessCnt) {
+        void addNewOSPageToML0(uint8_t pos, uint64_t PPN, uint32_t accessCnt,
+                                uint64_t epoch) {
           if (osPagesInML0.count(pos) == 0) {
             numOSPageInML0 += 1;
           }
-          osPagesInML0[pos] = AccessCntInfo{PPN, accessCnt};
+          osPagesInML0[pos] = AccessCntInfo{PPN, accessCnt, epoch};
+        }
+
+        void removeOSPageFromML0(uint8_t pos) {
+          auto it = osPagesInML0.find(pos);
+          if (it == osPagesInML0.end()) {
+            panic("could not find ML0 position %d", pos);
+          }
+          osPagesInML0.erase(it);
+          assert(numOSPageInML0 > 0);
+          numOSPageInML0 -= 1;
+        }
+
+        void seedAccessCnt(uint64_t PPN, uint32_t accessCnt, uint64_t epoch) {
+          if (_pos.count(PPN)) {
+            _s.erase(_pos[PPN]);
+          }
+          auto it = _s.insert(AccessCntInfo{PPN, accessCnt, epoch}).first;
+          _pos[PPN] = it;
+        }
+
+        bool getML0Entry(uint8_t pos, AccessCntInfo &entry) const {
+          auto it = osPagesInML0.find(pos);
+          if (it == osPagesInML0.end()) {
+            return false;
+          }
+          entry = it->second;
+          return true;
+        }
+
+        std::vector<AccessCntInfo> getTrackedPages() const {
+          return std::vector<AccessCntInfo>(_s.begin(), _s.end());
+        }
+
+        void restoreTrackedPage(const AccessCntInfo &entry) {
+          seedAccessCnt(entry.PPN, entry.accessCnt, entry.lastAccessEpoch);
         }
 
       private:
@@ -983,8 +1098,13 @@ class MemCtrl : public qos::MemCtrl
     uint64_t compress_latency;
     
     uint64_t thresholdForPromotion;
+    bool enableML0MigrationForDyL;
+    uint64_t dylectAccessEpoch;
+    uint64_t dylectAccessDecayInterval;
 
     std::unordered_set<PPN> incompressiblePages;
+    std::unordered_map<PPN, Addr> uncompressedLocationForDyL;
+    std::unordered_map<Addr, PPN> uncompressedOwnerForDyL;
     std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
     std::list<uint64_t> moderateFreeList;       // the free list for the 1024B memory block
     std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block
@@ -1000,6 +1120,38 @@ class MemCtrl : public qos::MemCtrl
     std::pair<PacketPtr, Tick> waitForDecompress;
     
     std::unordered_map<PacketPtr, std::vector<uint8_t>> decompressedPage;
+
+    PacketPtr readML1InWait;
+
+    struct PendingML0Migration
+    {
+        PacketPtr auxPkt;
+        PPN ppn;
+        Addr sourceAddr;
+        Addr targetAddr;
+        uint8_t targetPos;
+
+        PendingML0Migration()
+            : auxPkt(nullptr), ppn(0), sourceAddr(0), targetAddr(0),
+              targetPos(0)
+        {}
+
+        void reset()
+        {
+            auxPkt = nullptr;
+            ppn = 0;
+            sourceAddr = 0;
+            targetAddr = 0;
+            targetPos = 0;
+        }
+
+        bool valid() const
+        {
+            return auxPkt != nullptr;
+        }
+    };
+
+    PendingML0Migration pendingML0MigrationForDyL;
 
     std::pair<PPN, bool> pageInCompress;
 
@@ -1525,6 +1677,35 @@ class MemCtrl : public qos::MemCtrl
     void updatePreGatherForDyL(uint64_t ppn, MemInterface* mem_intr, uint8_t loc = 4);
 
     void updateMetaDataForDyL(uint64_t ppn, Addr page_dram_addr, uint8_t page_level, MemInterface* mem_intr, uint32_t compressed_size = 0, uint8_t loc = 4);
+
+    void registerUncompressedPageForDyL(PPN ppn, Addr page_dram_addr);
+
+    void unregisterUncompressedPageForDyL(PPN ppn);
+
+    void clearML0TrackingForDyL(PPN ppn);
+
+    bool removePageFromFreeListForDyL(Addr page_dram_addr);
+
+    bool pageAvailableForML0ForDyL(Addr page_dram_addr) const;
+
+    Addr allocateML1PageForDyL();
+
+    void relocateUncompressedPageForDyL(PPN ppn, Addr old_addr, Addr new_addr,
+                                        MemInterface* mem_intr);
+
+    Addr maybePromoteToML0ForDyL(PPN ppn, Addr page_dram_addr,
+                                 MemInterface* mem_intr);
+
+    bool translateAddrForDyLTiming(PacketPtr aux_pkt, Addr page_dram_addr,
+                                   Addr& dram_addr, MemInterface* mem_intr);
+
+    void replayBlockedRequestsForDyL(MemInterface* mem_intr);
+
+    void resumeOriginAccessForDyL(PacketPtr aux_pkt, MemInterface* mem_intr);
+
+    Addr applyML0PolicyForDyL(PPN ppn, Addr page_dram_addr,
+                              MemInterface* mem_intr,
+                              bool allowMigration = true);
 
     void updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr);
 
