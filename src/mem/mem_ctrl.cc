@@ -538,6 +538,15 @@ MemCtrl::unserialize(gem5::CheckpointIn &cp) {
 
 void
 MemCtrl::recordMemConsumption() {
+    // Keep the peak independent of the sampled vector: the latter intentionally
+    // contains only ten interval records, while this statistic covers the whole
+    // simulation (and remains correct after a stats reset).
+    const uint64_t current_used_bytes = operationMode == "normal" ?
+        stat_page_used.size() * 4096ULL : stat_used_bytes;
+    if (stats.maxUsedMemoryByte.value() < current_used_bytes) {
+        stats.maxUsedMemoryByte = current_used_bytes;
+    }
+
     if (passedInterval >= 10) {
         return;
     }
@@ -548,11 +557,7 @@ MemCtrl::recordMemConsumption() {
 
     lastRecordTick = curTick();
 
-    if (operationMode == "normal") {
-        stats.usedMemoryByte[passedInterval] = stat_page_used.size() * 4096;
-    } else {
-        stats.usedMemoryByte[passedInterval] = stat_used_bytes;
-    }
+    stats.usedMemoryByte[passedInterval] = current_used_bytes;
 
     passedInterval++;
 
@@ -10686,8 +10691,10 @@ MemCtrl::CtrlStats::CtrlStats(MemCtrl &_ctrl)
     ADD_STAT(requestorWriteAvgLat, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
              "Per-requestor write average memory access latency"),
-    ADD_STAT(usedMemoryByte, statistics::units::Count::get(),
+    ADD_STAT(usedMemoryByte, statistics::units::Byte::get(),
              "record the usage of physical memory (in Byte)"),
+    ADD_STAT(maxUsedMemoryByte, statistics::units::Byte::get(),
+             "maximum physical memory usage during the simulation"),
     // add stats for evaluation
     // bandwidth
     ADD_STAT(memToCPUTotalBytes, statistics::units::Count::get(),
@@ -10815,6 +10822,7 @@ MemCtrl::CtrlStats::regStats()
         .precision(0);
 
     for (int i = 0; i < 10; i++) {
+        usedMemoryByte[i] = -1;
         usedMemoryByte.subname(i, csprintf("Interval %d", i));
     }
 }

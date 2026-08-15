@@ -1,5 +1,13 @@
 CC      = musl-gcc
-CFLAGS  = -O1 -Wall -Wextra -g -static -fno-inline-small-functions -fno-builtin-memcpy -I /local/home/liuche/gem5/gem5/include -L /local/home/liuche/gem5/gem5/util/m5/build/x86/out -lm5
+
+CFLAGS  = -O1 -Wall -Wextra -g -static \
+          -fno-inline-small-functions \
+          -fno-builtin-memcpy \
+          -I /local/home/liuche/gem5/gem5/include
+
+LDFLAGS = -L /local/home/liuche/gem5/gem5/util/m5/build/x86/out
+
+LDLIBS  = -lm5
 
 TARGET  = victim
 
@@ -7,7 +15,7 @@ all: $(TARGET)
 
 $(TARGET): main.c ngx_auth.c ngx_pnalloc.c stubs.c \
            types.h config.h constants.h stubs.h
-	$(CC) $(CFLAGS) -o $@ main.c
+	$(CC) $(CFLAGS) -o $@ main.c $(LDFLAGS) $(LDLIBS)
 
 clean:
 	rm -f $(TARGET)

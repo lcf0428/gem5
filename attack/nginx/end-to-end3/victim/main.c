@@ -10,7 +10,9 @@
 #include "types.h"
 #include "constants.h"
 #include "stubs.h"
-// #include "gem5/gem5/m5ops.h"
+// #include "../../../gem5/gem5/m5ops.h"
+// #include "gem5/m5ops.h"
+#include <gem5/m5ops.h>
 
 /* --- Pull in stub / allocator implementations (single TU) --- */
 #include "stubs.c"
@@ -158,7 +160,13 @@ ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
 
     uint8_t* start_addr = r->headers_in.passwd.data - 82;
 
-    // for (uint64_t i = start_addr; i < start_addr + 80; i++) {
+    // printf("the snapshot: \n");
+    // for (uint64_t i = start_addr + 576; i < start_addr + 640; i++) {
+    //     printf("%d ", *(uint8_t *)(i));
+    // }
+
+    // printf("\nnext cacheline: \n");
+    // for (uint64_t i = start_addr + 64; i < start_addr + 128; i++) {
     //     printf("%d ", *(uint8_t *)(i));
     // }
     // printf("===== end ====\n");
@@ -172,21 +180,22 @@ ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
     new_page[0] = 0x01;
     _mm_clflush(new_page);
 
-    for (int i = 32; i < 52; i++) {
-        memcpy(start_addr + i * 64, rubbish, 64);
-    }
-
+    // for (int i = 32; i < 52; i++) {
+    //     memcpy(start_addr + i * 64, rubbish, 64);
+    // }
     // m5_reset_stats(0, 0);
+    // printf("iterate over the place for 4096 times\n");
     _mm_mfence();
-    for (int i = 0; i < 4096; i++) {
-        _mm_clflush(start_addr + 128);
+    for (int i = 0; i < 8192; i++) {
+        _mm_clflush(start_addr + 576);
         _mm_mfence();
-        tmp = *(volatile uint64_t*)(start_addr + 156);
+        // tmp = *(volatile uint64_t*)(start_addr + 156);
+        tmp = *(volatile uint64_t*)(start_addr + 578);
     }
     _mm_mfence();
     // m5_dump_stats(0, 0);
 
-    printf("tmp is %llx\n", tmp);
+    // printf("tmp is %llx\n", tmp);
 
     if (ngx_strcmp(encrypted, passwd->data) == 0) {
         return NGX_OK;
@@ -259,6 +268,23 @@ ngx_create_pool(size_t size)
     return p;
 }
 
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static void delay_cycles(uint64_t cycles)
+{
+    uint64_t start = rdtsc();
+
+    while (rdtsc() - start < cycles) {
+        __asm__ volatile ("pause");
+    }
+}
+
+
 /*
  * Usage: ./victim <user:password> <hash_string>
  *
@@ -267,6 +293,8 @@ ngx_create_pool(size_t size)
  */
 int main(int argc, char **argv)
 {
+    delay_cycles(40000000ULL);
+    printf("enter the main function\n");
     const char *credentials  = argv[1];   /* "user:password" */
     const char *hash_string  = argv[2];   /* hash in htpasswd */
     (void)argc;
@@ -330,5 +358,9 @@ int main(int argc, char **argv)
     }
 
     unlink("/tmp/htpasswd_test");
+
+    printf("finally! finished\n");
+    fflush(stdout);
+    m5_exit(1000);
     return 0;
 }

@@ -28,7 +28,8 @@ def find_password_len(
     This lenght is not linear, because base64 encoding does not grow linearly.
     """
     ulen = len(username) + 1  # "username:" prefix
-    for pwd_len in range(235, 500):
+    # for pwd_len in range(235, 500):
+    for pwd_len in range(365, 1000):
         cred_len = ulen + pwd_len
         alloc1 = compute_alloc1_size(cred_len)
         # alloc2 = hash_len + 1  # passwd buffer
@@ -39,4 +40,4 @@ def find_password_len(
             return pwd_len
     return None
 
-print(find_password_len("t", 0, 1))
+print(find_password_len("t", 0, 0))

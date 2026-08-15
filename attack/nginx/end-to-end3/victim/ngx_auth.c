@@ -8,7 +8,7 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
     ngx_str_t   auth, encoded;
     ngx_uint_t  len;
 
-    printf("r->headers_in.user.data: %s\n", r->headers_in.user.data);
+    // printf("r->headers_in.user.data: %s\n", r->headers_in.user.data);
 
     if (r->headers_in.user.len == 0 && r->headers_in.user.data != NULL) {
         return NGX_DECLINED;
@@ -16,15 +16,15 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
 
 
     if (r->headers_in.authorization == NULL) {
-        printf("the auth is NULL\n");
+        // printf("the auth is NULL\n");
         r->headers_in.user.data = (u_char *) "";
         return NGX_DECLINED;
     }
 
     encoded = r->headers_in.authorization->value;
 
-    printf("len is %d\n", encoded.len);
-    printf("encoded.data is %s\n", encoded.data);
+    // printf("len is %d\n", encoded.len);
+    // printf("encoded.data is %s\n", encoded.data);
 
     if (encoded.len < sizeof("Basic ") - 1
         || ngx_strncasecmp(encoded.data, (u_char *) "Basic ",
@@ -49,10 +49,10 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
     }
 
     auth.len = ngx_base64_decoded_length(encoded.len);
-    printf("auth.len is %d\n", auth.len);
+    // printf("auth.len is %d\n", auth.len);
     auth.data = ngx_pnalloc(r->pool, auth.len + 1);
 
-    printf("auth.data is %s\n", auth.data);
+    // printf("auth.data is %s\n", auth.data);
     if (auth.data == NULL) {
         return NGX_ERROR;
     }
@@ -65,7 +65,7 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
 
     auth.data[auth.len] = '\0';
 
-    printf("finally auth.data is %s\n", auth.data);
+    // printf("finally auth.data is %s\n", auth.data);
 
     for (len = 0; len < auth.len; len++) {
         if (auth.data[len] == ':') {
@@ -123,7 +123,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
 
     rc = ngx_http_auth_basic_user(r);
 
-    printf("the rc is %ld\n", rc);
+    // printf("the rc is %ld\n", rc);
 
     if (rc == NGX_DECLINED) {
 
@@ -141,9 +141,9 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    printf("userfile.data %s\n", user_file.data);
+    // printf("userfile.data %s\n", user_file.data);
     fd = ngx_open_file(user_file.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
-    printf("fd is %d\n", fd);
+    // printf("fd is %d\n", fd);
 
     if (fd == NGX_INVALID_FILE) {
         err = ngx_errno;
@@ -242,7 +242,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
                 break;
             }
         }
-        printf("the state is %d\n", state);
+        // printf("the state is %d\n", state);
         if (state == sw_passwd) {
             left = left + n - passwd;
             ngx_memmove(buf, &buf[passwd], left);
@@ -257,7 +257,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
 
     if (state == sw_passwd) {
         pwd.len = i - passwd;
-        printf("pwd.len is %d\n", pwd.len);
+        // printf("pwd.len is %d\n", pwd.len);
         pwd.data = ngx_pnalloc(r->pool, pwd.len + 1);
         if (pwd.data == NULL) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;

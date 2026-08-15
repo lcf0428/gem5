@@ -623,6 +623,40 @@ fcntlFunc(SyscallDesc *desc, ThreadContext *tc,
     int coe = hbfdp->getCOE();
 
     switch (cmd) {
+        case F_DUPFD:
+        #ifdef F_DUPFD_CLOEXEC
+        case F_DUPFD_CLOEXEC:
+        #endif
+        {
+            int min_tgt_fd = varargs.get<int>();
+
+            if (min_tgt_fd < 0 || min_tgt_fd >= p->fds->getSize())
+                return -EINVAL;
+
+            int new_sim_fd = dup(sim_fd);
+            if (new_sim_fd == -1)
+                return -errno;
+
+            auto new_hbfdp = std::dynamic_pointer_cast<HBFDEntry>(hbfdp->clone());
+            new_hbfdp->setSimFD(new_sim_fd);
+
+        #ifdef F_DUPFD_CLOEXEC
+            new_hbfdp->setCOE(cmd == F_DUPFD_CLOEXEC);
+        #else
+            new_hbfdp->setCOE(false);
+        #endif
+
+            for (int new_tgt_fd = min_tgt_fd; new_tgt_fd < p->fds->getSize(); ++new_tgt_fd) {
+                if (!(*p->fds)[new_tgt_fd]) {
+                    p->fds->setFDEntry(new_tgt_fd, new_hbfdp);
+                    return new_tgt_fd;
+                }
+            }
+
+            close(new_sim_fd);
+            return -EMFILE;
+        }
+
       case F_GETFD:
         return coe & FD_CLOEXEC;
 

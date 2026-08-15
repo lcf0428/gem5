@@ -1363,6 +1363,7 @@ class MemCtrl : public qos::MemCtrl
 
         // record the memory consumption occasionally
         statistics::Vector usedMemoryByte;
+        statistics::Scalar maxUsedMemoryByte;
 
         // add stats for bandwidth/Energy/performance breakup
         // For bandwidth

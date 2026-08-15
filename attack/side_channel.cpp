@@ -85,7 +85,7 @@ volatile uint8_t aux;
 #define OVERFLOW_NUM 16
 
 int main() {
-
+    usleep(100000);
     uint8_t SECRET = 0x1;
 
     void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, 
