@@ -30,14 +30,14 @@ int main() {
     }
 
     /* ===== the cache line is not cross the boundary ===== */
-    // for (int i = 0; i < 64; i++) {
-    //     victim_page[64 + i] = 2;
-    // }
+    for (int i = 0; i < 64; i++) {
+        victim_page[64 + i] = 2;
+    }
 
     /* ===== the cache line becomes cross boundary =====*/
-    for (int i = 0; i < 64; i++) {
-        victim_page[64 + i] = i * i;
-    }
+    // for (int i = 0; i < 64; i++) {
+    //     victim_page[64 + i] = i * i;
+    // }
 
     // for (int i = 0; i < 8; i++) {
     //     victim_page[64 + i] = 1;

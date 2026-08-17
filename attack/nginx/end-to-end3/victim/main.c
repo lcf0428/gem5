@@ -293,8 +293,8 @@ static void delay_cycles(uint64_t cycles)
  */
 int main(int argc, char **argv)
 {
-    delay_cycles(40000000ULL);
-    printf("enter the main function\n");
+    delay_cycles(5000000ULL);
+    // printf("enter the main function 3000000\n");
     const char *credentials  = argv[1];   /* "user:password" */
     const char *hash_string  = argv[2];   /* hash in htpasswd */
     (void)argc;

@@ -1,0 +1,88 @@
+import argparse
+
+import m5
+from m5.objects import *
+
+parser = argparse.ArgumentParser(
+    description="A simple system with different operation mode of Memory Controller"
+)
+
+parser.add_argument(
+    "--mem_operation_mode",
+    type=str,
+    default="normal",
+    help="memory controller operation mode: normal, compresso, DyLeCT",
+)
+
+parser.add_argument(
+    "--recency_list_size",
+    type=int,
+    default=0,
+    help="determine the size of recency list, only helpful in DyLeCT mode",
+)
+
+parser.add_argument(
+    "--tick_interval",
+    type=int,
+    default=10,
+    help="the interval to take mem snapshots",
+)
+
+options = parser.parse_args()
+
+system = System()
+
+system.clk_domain = SrcClockDomain()
+system.clk_domain.clock = "1GHz"
+system.clk_domain.voltage_domain = VoltageDomain()
+
+# Set up the system
+system.mem_mode = "timing"  # Use timing accesses
+system.mem_ranges = [AddrRange("512MiB")]  # Create an address range
+
+system.cpu = DerivO3CPU()
+
+system.membus = SystemXBar()
+
+system.cpu.icache_port = system.membus.cpu_side_ports
+system.cpu.dcache_port = system.membus.cpu_side_ports
+
+# create the interrupt controller for the CPU and connect to the membus
+system.cpu.createInterruptController()
+
+# For X86 only we make sure the interrupts care connect to memory.
+# Note: these are directly connected to the memory bus and are not cached.
+# For other ISA you should remove the following three lines.
+system.cpu.interrupts[0].pio = system.membus.mem_side_ports
+system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
+system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
+
+system.mem_ctrl = MemCtrl(operation_mode=options.mem_operation_mode, recency_list_size=options.recency_list_size, tick_interval=options.tick_interval)
+system.mem_ctrl.dram = DDR3_1600_8x8()
+system.mem_ctrl.dram.range = system.mem_ranges[0]
+system.mem_ctrl.port = system.membus.mem_side_ports
+
+# Connect the system up to the membus
+system.system_port = system.membus.cpu_side_ports
+
+thispath = os.path.dirname(os.path.realpath(__file__))
+binary = os.path.join(
+    thispath,
+    "../../",
+    "attack/side_channel_dylect",
+)
+
+system.workload = SEWorkload.init_compatible(binary)
+
+process = Process()
+process.cmd = [binary]
+system.cpu.workload = process
+system.cpu.createThreads()
+
+root = Root(full_system=False, system=system)
+
+# start simulation
+m5.instantiate()
+print("Starting Simulation...")
+exit_event = m5.simulate()
+print(f"Exiting @ {m5.curTick()} because {exit_event.getCause()}")

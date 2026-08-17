@@ -1,99 +1,179 @@
-# The gem5 Simulator
+# Secure Hardware Memory Compression in gem5
 
-This is the repository for the gem5 simulator. It contains the full source code
-for the simulator and all tests and regressions.
+This project reproduces prior hardware memory-compression designs in gem5 and introduces a new secure hardware memory-compression mechanism proposed in our paper, **XXX**.
 
-The gem5 simulator is a modular platform for computer-system architecture
-research, encompassing system-level architecture as well as processor
-microarchitecture. It is primarily used to evaluate new hardware designs,
-system software changes, and compile-time and run-time system optimizations.
+## Memory-Controller Modes
 
-The main website can be found at <http://www.gem5.org>.
+The memory controller supports four operating modes:
 
-## Testing status
+| Mode | Description |
+| --- | --- |
+| `normal` | Original gem5 implementation without memory compression |
+| `DyLeCT` | Implementation based on DyLeCT [1] |
+| `compresso` | Implementation based on Compresso [2] |
+| `secure` | Our proposed secure memory-compression design |
 
-**Note**: These regard tests run on the develop branch of gem5:
-<https://github.com/gem5/gem5/tree/develop>.
+## Build
 
-[![Daily Tests](https://github.com/gem5/gem5/actions/workflows/daily-tests.yaml/badge.svg?branch=develop)](https://github.com/gem5/gem5/actions/workflows/daily-tests.yaml)
-[![Weekly Tests](https://github.com/gem5/gem5/actions/workflows/weekly-tests.yaml/badge.svg?branch=develop)](https://github.com/gem5/gem5/actions/workflows/weekly-tests.yaml)
-[![Compiler Tests](https://github.com/gem5/gem5/actions/workflows/compiler-tests.yaml/badge.svg?branch=develop)](https://github.com/gem5/gem5/actions/workflows/compiler-tests.yaml)
+Build the X86 optimized binary with:
 
-## Getting started
+```bash
+scons build/X86/gem5.opt -j8
+```
 
-A good starting point is <http://www.gem5.org/about>, and for
-more information about building the simulator and getting started
-please see <http://www.gem5.org/documentation> and
-<http://www.gem5.org/documentation/learning_gem5/introduction>.
+## SPEC CPU2017 Evaluation
 
-## Building gem5
+We use workloads from SPEC CPU2017 to evaluate the performance of the different designs. The related scripts are located in:
 
-To build gem5, you will need the following software: g++ or clang,
-Python (gem5 links in the Python interpreter), SCons, zlib, m4, and lastly
-protobuf if you want trace capture and playback support. Please see
-<http://www.gem5.org/documentation/general_docs/building> for more details
-concerning the minimum versions of these tools.
+```text
+scripts/SPEC
+```
 
-Once you have all dependencies resolved, execute
-`scons build/ALL/gem5.opt` to build an optimized version of the gem5 binary
-(`gem5.opt`) containing all gem5 ISAs. If you only wish to compile gem5 to
-include a single ISA, you can replace `ALL` with the name of the ISA. Valid
-options include `ARM`, `NULL`, `MIPS`, `POWER`, `RISCV`, `SPARC`, and `X86`
-The complete list of options can be found in the build_opts directory.
+We use SimPoint to identify representative execution regions.
 
-See https://www.gem5.org/documentation/general_docs/building for more
-information on building gem5.
+Before running the scripts, update all gem5, SimPoint, and SPEC directory paths to match your local environment.
 
-## The Source Tree
+### 1. Profile the Workload
 
-The main source tree includes these subdirectories:
+Run the workload once using `NonCachingSimpleCPU` to collect Basic Block Vectors (BBVs):
 
-* build_opts: pre-made default configurations for gem5
-* build_tools: tools used internally by gem5's build process.
-* configs: example simulation configuration scripts
-* ext: less-common external packages needed to build gem5
-* include: include files for use in other programs
-* site_scons: modular components of the build system
-* src: source code of the gem5 simulator. The C++ source, Python wrappers, and Python standard library are found in this directory.
-* system: source for some optional system software for simulated systems
-* tests: regression tests
-* util: useful utility programs and files
+```bash
+python3 profile.py
+```
 
-## gem5 Resources
+### 2. Generate SimPoints
 
-To run full-system simulations, you may need compiled system firmware, kernel
-binaries and one or more disk images, depending on gem5's configuration and
-what type of workload you're trying to run. Many of these resources can be
-obtained from <https://resources.gem5.org>.
+Run the external SimPoint clustering tool on the BBV file:
 
-More information on gem5 Resources can be found at
-<https://www.gem5.org/documentation/general_docs/gem5_resources/>.
+```bash
+python3 build.py
+```
 
-## Getting Help, Reporting bugs, and Requesting Features
+This generates two files:
 
-We provide a variety of channels for users and developers to get help, report
-bugs, requests features, or engage in community discussions. Below
-are a few of the most common we recommend using.
+- `simpoints`
+- `weights`
 
-* **GitHub Discussions**: A GitHub Discussions page. This can be used to start
-discussions or ask questions. Available at
-<https://github.com/orgs/gem5/discussions>.
-* **GitHub Issues**: A GitHub Issues page for reporting bugs or requesting
-features. Available at <https://github.com/gem5/gem5/issues>.
-* **Jira Issue Tracker**: A Jira Issue Tracker for reporting bugs or requesting
-features. Available at <https://gem5.atlassian.net/>.
-* **Slack**: A Slack server with a variety of channels for the gem5 community
-to engage in a variety of discussions. Please visit
-<https://www.gem5.org/join-slack> to join.
-* **gem5-users@gem5.org**: A mailing list for users of gem5 to ask questions
-or start discussions. To join the mailing list please visit
-<https://www.gem5.org/mailing_lists>.
-* **gem5-dev@gem5.org**: A mailing list for developers of gem5 to ask questions
-or start discussions. To join the mailing list please visit
-<https://www.gem5.org/mailing_lists>.
+### 3. Create Checkpoints
 
-## Contributing to gem5
+Create a checkpoint before each representative region:
 
-We hope you enjoy using gem5. When appropriate we advise sharing your
-contributions to the project. <https://www.gem5.org/contributing> can help you
-get started. Additional information can be found in the CONTRIBUTING.md file.
+```bash
+python3 checkpoint.py [operation mode]
+```
+
+### 4. Run Experiments
+
+Restore checkpoints and run the final simulation:
+
+```bash
+python3 restore.py [operation mode]
+```
+
+## Side-Channel Attacks
+
+We implemented attacks against both DyLeCT and Compresso. The victim programs are located in:
+
+```text
+attack
+```
+
+The following attack programs target Compresso:
+
+| Program | Description |
+| --- | --- |
+| `side_channel_compresso_WE.cpp` | Exploits the write-expansion primitive to observe timing differences. |
+| `side_channel_compresso_RA.cpp` | Exploits the read-amplification primitive to observe timing differences. |
+
+Refer to `COMPILE.md` for example compilation commands.
+
+We also evaluate an end-to-end attack against a real Nginx implementation. The victim program is located at:
+
+```text
+attack/nginx/end-to-end3/victim
+```
+
+### Running Attack Simulations
+
+Attack configuration files are available under:
+
+```text
+configs/attack
+```
+
+For example, run the Compresso read-amplification timing attack with:
+
+```bash
+build/X86/gem5.opt configs/attack/timing_compresso.py --mem_operation_mode=compresso > stats/compresso.log
+```
+
+## Multi-Core Attack Evaluation
+
+We also evaluate whether the attacks remain effective when other programs execute on separate CPU cores while sharing the same memory controller.
+
+### Two-Core Simulation
+
+One core runs the attack program, while the other runs `stress-ng` to generate cache pressure.
+
+### Three-Core Simulation
+
+One core runs the attack program, while the other two execute memory-intensive SPEC CPU2017 workloads:
+
+- `mcf`
+- `omnetpp`
+
+The corresponding configuration files are available under:
+
+```text
+configs/attack
+```
+
+- `two_cores_timing.py`
+- `three_cores_timing.py`
+
+## Reference Results
+
+The following simulation times were collected in our evaluation environment and are provided for reference.
+
+### Write-Amplification Attack
+
+| Secret value | Simulation time |
+| --- | ---: |
+| `0x1` | 178,000 ticks |
+| `0x0` — triggers recompression in Compresso | 267,000 ticks |
+
+### Read-Amplification Attack
+
+| Cache-line condition | Simulation time |
+| --- | ---: |
+| Crosses a boundary | 4,196,733,000 ticks |
+| Does not cross a boundary | 3,981,257,000 ticks |
+
+### Single-Core End-to-End Nginx Attack
+
+The following example leaks the first byte of the password:
+
+| Password prefix | Simulation time |
+| --- | ---: |
+| `"a"` | 6,005,037,000 ticks |
+| `"1"` | 6,050,143,000 ticks |
+
+### Two-Core Nginx Attack with `stress-ng`
+
+| Password prefix | Simulation time |
+| --- | ---: |
+| `"a"` | 6,446,821,000 ticks |
+| `"1"` | 6,513,654,000 ticks |
+
+### Three-Core Nginx Attack with `mcf` and `omnetpp`
+
+| Password prefix | Simulation time |
+| --- | ---: |
+| `"a"` | 6,749,331,000 ticks |
+| `"1"` | 6,788,317,000 ticks |
+
+## References
+
+[1] G. Panwar, M. Laghari, E. Choukse, and X. Jian, “DyLeCT: Achieving Huge-page-like Translation Performance for Hardware-compressed Memory,” *Proceedings of the 51st Annual International Symposium on Computer Architecture (ISCA)*, 2024, pp. 1129–1143. doi: [10.1109/ISCA59077.2024.00085](https://doi.org/10.1109/ISCA59077.2024.00085)
+
+[2] E. Choukse, M. Erez, and A. R. Alameldeen, “Compresso: Pragmatic Main Memory Compression,” *Proceedings of the 51st Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)*, 2018, pp. 546–558. doi: [10.1109/MICRO.2018.00051](https://doi.org/10.1109/MICRO.2018.00051)
