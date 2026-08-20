@@ -12,7 +12,7 @@ volatile uint8_t sink;
 volatile uint8_t aux;
 
 #define EXHAUSTED_NUM 550
-#define REPEATED_TIMES 8
+#define REPEATED_TIMES 10
 
 int main() {
 

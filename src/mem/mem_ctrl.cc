@@ -111,6 +111,28 @@ namespace gem5
         std::printf("\n");
     }
 
+    uint64_t dylectPayloadHash(const uint8_t* data, size_t size)
+    {
+        // FNV-1a is inexpensive and deterministic. It is used only to match
+        // a compressed payload at creation, commit, and later readback.
+        uint64_t hash = 1469598103934665603ULL;
+        for (size_t i = 0; i < size; ++i) {
+            hash ^= data[i];
+            hash *= 1099511628211ULL;
+        }
+        return hash;
+    }
+
+    uint64_t dylectPayloadHead(const uint8_t* data, size_t size)
+    {
+        uint64_t head = 0;
+        const size_t bytes = std::min<size_t>(size, sizeof(head));
+        for (size_t i = 0; i < bytes; ++i) {
+            head = (head << 8) | data[i];
+        }
+        return head;
+    }
+
 
 namespace memory
 {
@@ -254,8 +276,11 @@ MemCtrl::init()
             freeList.emplace_back(addr);
         }
 
-        // memoryUsageThreshold = static_cast<uint64_t>(recencyListSize) * 100LL;
-        memoryUsageThreshold = 100;
+        // The configuration supplies this threshold in 100-byte units.
+        // Do not leave the debug value of 100 bytes enabled: it starts cold
+        // page compression almost immediately and ignores the experiment's
+        // recency_list_size setting.
+        memoryUsageThreshold = static_cast<uint64_t>(recencyListSize) * 100ULL;
         thresholdForPromotion = 8;
         dylectAccessDecayInterval = thresholdForPromotion * 8;
 
@@ -1129,6 +1154,8 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         addr = freeList.front();
         freeList.pop_front();
         std::vector<uint8_t> zeroPage(4096, 0);
+        checkCompressedWriteOverlapForDyL(
+            addr, 4096, "atomic-new-page-zero");
         mem_intr->atomicWrite(zeroPage, addr, 4096);
         stat_used_bytes += 4096;
 
@@ -1163,7 +1190,19 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             // Decompress and copy the data to the new page
             std::vector<uint8_t> decompressedPage = decompressPage(pageBuffer.data(), compressedSize);
 
-            mem_intr->atomicWrite(decompressedPage, addr, decompressedPage.size());
+            panic_if(decompressedPage.size() != 4096,
+                     "DyLeCT atomic decompression failed: ppn=%llu "
+                     "addr=%#llx size=%llu",
+                     static_cast<unsigned long long>(ppn),
+                     static_cast<unsigned long long>(oldAddr),
+                     static_cast<unsigned long long>(compressedSize));
+            releaseCompressedPayloadForDyL(
+                ppn, oldAddr, compressedSize, "atomic-read");
+
+            checkCompressedWriteOverlapForDyL(
+                addr, decompressedPage.size(), "atomic-decompress-write");
+            mem_intr->atomicWrite(
+                decompressedPage, addr, decompressedPage.size());
             if (compressedSize <= 256) {
                 smallFreeList.push_back(oldAddr);
                 stat_used_bytes -= 256;
@@ -1294,9 +1333,18 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
         // copy the compressed data into the space at newAddr
         mem_intr->atomicWrite(compressedPage, newAddr, compressedPage.size());
+        recordCompressedPayloadForDyL(
+            coldPageId, newAddr, compressedPage, "atomic");
     
         // update the CTE (uncompressed to compressed)
         newCTE = (1ULL << 63) | (1ULL << 62) | (((cSize - 1) & ((1ULL << 12) - 1)) << 50) | ((newAddr >> 8) << 10);
+        printf("[DyL][CTE-WRITE] tick=%llu source=atomic ppn=%llu "
+               "addr=0x%llx size=%llu raw=0x%016llx\n",
+            static_cast<unsigned long long>(curTick()),
+            static_cast<unsigned long long>(coldPageId),
+            static_cast<unsigned long long>(newAddr),
+            static_cast<unsigned long long>(cSize),
+            static_cast<unsigned long long>(newCTE));
 
         if (isAddressCovered(coldPageId * 4096, pkt->getSize(), 1)){
             printf("after being compressed, the new cte is 0x%lx\n", newCTE);
@@ -1331,6 +1379,10 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     pkt->setAddr(realAddr);
 
     // do the actual memory access and turn the packet into a response
+    if (pkt->isWrite()) {
+        checkCompressedWriteOverlapForDyL(
+            pkt->getAddr(), pkt->getSize(), "atomic-origin-write");
+    }
     mem_intr->accessForDyL(pkt, pkt);
 
     if (isAddressCovered(pkt->DyLBackup, pkt->getSize(), 0)){
@@ -3241,9 +3293,16 @@ MemCtrl::addSubPktToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count, MemI
 
             mem_intr->writeQueueSize++;
 
-            if (pkt->DyLPType != 0x2) {
-               ++dylectWriteBurstsAwaitingIssue[pkt];
+            // MemPacket retains pkt until this burst is issued.  Track both
+            // auxiliary and controller-generated writes so neither can be
+            // destroyed while a queued MemPacket still points at it.
+            auto [write_lifetime, inserted] =
+                dylectWriteBurstsAwaitingIssue.emplace(pkt, 0);
+            if (inserted) {
+                // All queued bursts collectively own one Packet reference.
+                pkt->ref_cnt++;
             }
+            ++write_lifetime->second;
 
             if (updateStats) {
                 expectWriteQueueSize++;
@@ -4016,6 +4075,8 @@ MemCtrl::relocateUncompressedPageForDyL(PPN ppn, Addr old_addr, Addr new_addr,
 
     std::vector<uint8_t> page(4096, 0);
     mem_intr->atomicRead(page.data(), old_addr, 4096);
+    checkCompressedWriteOverlapForDyL(
+        new_addr, 4096, "ml0-relocate-write");
     mem_intr->atomicWrite(page, new_addr, 4096);
     registerUncompressedPageForDyL(ppn, new_addr);
     freeList.push_back(old_addr);
@@ -4389,6 +4450,12 @@ MemCtrl::parsePageInfoForDyL(const std::vector<uint8_t>& cte, uint32_t ofs, uint
             }
             addr = (addr << 6) | ((cte[base_ofs + 6] & 0b11111100) >> 2);
             addr <<= 8;
+            printf("[DyL][CTE-PARSE] tick=%llu ppn=%llu raw=0x%016llx "
+                   "addr=0x%llx size=%u\n",
+                static_cast<unsigned long long>(curTick()),
+                static_cast<unsigned long long>(ppn),
+                static_cast<unsigned long long>(for_test),
+                static_cast<unsigned long long>(addr), compressed_size);
         } else {
             addr = cte[base_ofs] & 0b00111111;
             for (int i = base_ofs + 1; i < base_ofs + 4; i++) {
@@ -4445,6 +4512,21 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
 
     unsigned offset = pkt->getAddr() & (burst_size - 1);
     unsigned int pkt_count = divCeil(offset + size, burst_size);
+
+    const PPN incoming_ppn = pkt->getAddr() >> 12;
+    if (compressColdPageInProcess &&
+        incoming_ppn == pageInCompress.first &&
+        !pageInCompress.second) {
+        // Any access makes the cold-page snapshot stale. Cancel its commit;
+        // the access will refresh recency and, if necessary, decompress the
+        // currently published representation.
+        pageInCompress.second = true;
+        printf("[DyL][CCP-CANCEL-ACCESS] tick=%llu kind=timing ppn=%llu "
+               "cmd=%s\n",
+            static_cast<unsigned long long>(curTick()),
+            static_cast<unsigned long long>(incoming_ppn),
+            pkt->cmdString().c_str());
+    }
 
     if (blockedForDyL) {
         assert(!hasBlocked);
@@ -4562,9 +4644,6 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
             monitor.erase(pkt);
 
             updateRecencyList(ppn);
-            if (ppn == pageInCompress.first) {
-                pageInCompress.second = false;
-            }
 
             /* store the original address */
             pkt->setBackUp(pkt->getAddr());
@@ -6353,6 +6432,20 @@ MemCtrl::updateCTEForDyL(uint64_t ppn, Addr page_dram_addr, MemInterface* mem_in
     //     cte[0] = 0b10000000;
     // }
 
+    if (compressed_size != 4096) {
+        uint64_t raw_cte = 0;
+        for (uint8_t byte : cte) {
+            raw_cte = (raw_cte << 8) | byte;
+        }
+        printf("[DyL][CTE-WRITE] tick=%llu source=timing ppn=%llu "
+               "addr=0x%llx size=%u raw=0x%016llx\n",
+            static_cast<unsigned long long>(curTick()),
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(page_dram_addr),
+            compressed_size,
+            static_cast<unsigned long long>(raw_cte));
+    }
+
     // printf("update CTE for DyL\n");
     // printf("the ppn is %d\n", ppn);
     // printf("the cte is: \n");
@@ -6425,24 +6518,122 @@ MemCtrl::updateMetaDataForDyL(uint64_t ppn, Addr page_dram_addr, uint8_t page_le
 }
 
 void
-MemCtrl::tryDeletePktForDyL(PacketPtr pkt) {
-    if (dylectWriteBurstsAwaitingIssue.count(pkt) != 0) {
+MemCtrl::recordCompressedPayloadForDyL(
+    PPN ppn, Addr addr, const std::vector<uint8_t>& payload,
+    const char* source)
+{
+    const uint64_t hash = dylectPayloadHash(payload.data(), payload.size());
+    const uint64_t head = dylectPayloadHead(payload.data(), payload.size());
+    auto old = dylectCompressedDebugInfo.find(addr);
+    if (old != dylectCompressedDebugInfo.end()) {
+        printf("[DyL][CP-REUSE] tick=%llu source=%s addr=0x%llx "
+               "old_ppn=%llu old_size=%u old_hash=0x%llx old_gen=%llu "
+               "new_ppn=%llu new_size=%llu new_hash=0x%llx\n",
+            static_cast<unsigned long long>(curTick()), source,
+            static_cast<unsigned long long>(addr),
+            static_cast<unsigned long long>(old->second.ppn),
+            old->second.size,
+            static_cast<unsigned long long>(old->second.hash),
+            static_cast<unsigned long long>(old->second.generation),
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(payload.size()),
+            static_cast<unsigned long long>(hash));
+    }
+
+    const uint64_t generation = ++dylectCompressedGeneration;
+    dylectCompressedDebugInfo[addr] = {
+        ppn, static_cast<uint32_t>(payload.size()), hash, generation
+    };
+    printf("[DyL][CP-COMMIT] tick=%llu source=%s ppn=%llu addr=0x%llx "
+           "size=%llu hash=0x%llx head=0x%016llx gen=%llu\n",
+        static_cast<unsigned long long>(curTick()), source,
+        static_cast<unsigned long long>(ppn),
+        static_cast<unsigned long long>(addr),
+        static_cast<unsigned long long>(payload.size()),
+        static_cast<unsigned long long>(hash),
+        static_cast<unsigned long long>(head),
+        static_cast<unsigned long long>(generation));
+}
+
+void
+MemCtrl::releaseCompressedPayloadForDyL(
+    PPN ppn, Addr addr, uint32_t size, const char* source)
+{
+    auto info = dylectCompressedDebugInfo.find(addr);
+    if (info == dylectCompressedDebugInfo.end()) {
+        printf("[DyL][CP-FREE] tick=%llu source=%s ppn=%llu addr=0x%llx "
+               "size=%u tracked=0\n",
+            static_cast<unsigned long long>(curTick()), source,
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(addr), size);
         return;
     }
 
-    assert(pkt->ref_cnt >= 1);
-    if (pkt->ref_cnt == 1) {
-        if (pkt->DyLPType != 0x2 && pkt->DyLCandidate) {
-            // The final candidate reference is owned by the original
-            // auxiliary request (and may still be present in
-            // inProcessPkts). Deferred internal writes do not necessarily
-            // own an additional reference when their last timing burst is
-            // issued, so never consume this base reference here.
-            if (pkt->DyLCandidate->ref_cnt > 1) {
-                pkt->DyLCandidate->ref_cnt--;
-            }
+    printf("[DyL][CP-FREE] tick=%llu source=%s ppn=%llu addr=0x%llx "
+           "size=%u tracked=1 owner_ppn=%llu owner_size=%u "
+           "owner_hash=0x%llx owner_gen=%llu\n",
+        static_cast<unsigned long long>(curTick()), source,
+        static_cast<unsigned long long>(ppn),
+        static_cast<unsigned long long>(addr), size,
+        static_cast<unsigned long long>(info->second.ppn),
+        info->second.size,
+        static_cast<unsigned long long>(info->second.hash),
+        static_cast<unsigned long long>(info->second.generation));
+    dylectCompressedDebugInfo.erase(info);
+}
+
+void
+MemCtrl::checkCompressedWriteOverlapForDyL(
+    Addr addr, uint32_t size, const char* source)
+{
+    const Addr end = addr + size;
+    for (const auto& [compressed_addr, info] :
+         dylectCompressedDebugInfo) {
+        const Addr compressed_end = compressed_addr + info.size;
+        if (addr < compressed_end && compressed_addr < end) {
+            printf("[DyL][CP-OVERWRITE] tick=%llu source=%s "
+                   "write_addr=0x%llx write_size=%u owner_ppn=%llu "
+                   "compressed_addr=0x%llx compressed_size=%u "
+                   "compressed_hash=0x%llx owner_gen=%llu\n",
+                static_cast<unsigned long long>(curTick()), source,
+                static_cast<unsigned long long>(addr), size,
+                static_cast<unsigned long long>(info.ppn),
+                static_cast<unsigned long long>(compressed_addr),
+                info.size,
+                static_cast<unsigned long long>(info.hash),
+                static_cast<unsigned long long>(info.generation));
+            fflush(stdout);
+            panic("DyLeCT write overlaps a live compressed payload; "
+                  "inspect the CP-OVERWRITE log");
         }
-        delete pkt;
+    }
+}
+
+void
+MemCtrl::tryDeletePktForDyL(PacketPtr pkt) {
+    // Every caller releases one logical owner.  An internal DyLeCT packet
+    // owns one reference to its auxiliary candidate, so release that
+    // reference only after the internal packet itself becomes unreachable.
+    // Saving the candidate before deleting pkt is essential: accessing
+    // pkt->DyLCandidate after delete would be a use-after-free.
+    assert(pkt->ref_cnt > 0);
+    if (--pkt->ref_cnt != 0) {
+        return;
+    }
+
+    // A queued DyLeCT write owns a reference, so reaching zero while the
+    // packet is still tracked indicates an unbalanced lifetime transition.
+    assert(dylectWriteBurstsAwaitingIssue.count(pkt) == 0);
+
+    PacketPtr candidate = nullptr;
+    if (pkt->DyLPType != 0x2) {
+        candidate = pkt->DyLCandidate;
+    }
+
+    delete pkt;
+
+    if (candidate) {
+        tryDeletePktForDyL(candidate);
     }
 }
 
@@ -6518,6 +6709,8 @@ MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
             stat_used_bytes += 4096;
 
             std::vector<uint8_t> zeroPage(4096, 0);
+            checkCompressedWriteOverlapForDyL(
+                dram_addr, 4096, "functional-queue-new-page-zero");
             mem_intr->atomicWrite(zeroPage, dram_addr, 4096, 0);
             updateMetaDataForDyL(ppn, dram_addr, 1, mem_intr);
             mem_intr->atomicRead(cteBlock.data(), cteAddrAligned, 64);
@@ -6537,6 +6730,14 @@ MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
             /* decompress the page */
             std::vector<uint8_t> dPage = decompressPage(cPage.data(), cpage_size);
 
+            panic_if(dPage.size() != 4096,
+                     "DyLeCT functional-queue decompression failed: "
+                     "ppn=%llu addr=%#llx size=%u",
+                     static_cast<unsigned long long>(ppn),
+                     static_cast<unsigned long long>(page_addr), cpage_size);
+            releaseCompressedPayloadForDyL(
+                ppn, page_addr, cpage_size, "functional-queue-read");
+
             if (cpage_size <= 256) {
                 smallFreeList.push_back(page_addr);
                 stat_used_bytes -= 256;
@@ -6549,7 +6750,6 @@ MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
                 stat_used_bytes -= 2048;
             }
 
-            assert(dPage.size() == 4096);
             assert(freeList.size() > 0);
 
             Addr newAddr = freeList.front();
@@ -6562,6 +6762,8 @@ MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
 
             assert (start_loc + inProcessPkt->getSize() <= 4096);
             memcpy(dPage.data() + start_loc, inProcessPkt->getPtr<uint8_t>(), inProcessPkt->getSize());
+            checkCompressedWriteOverlapForDyL(
+                newAddr, 4096, "functional-queue-decompress-write");
             mem_intr->atomicWrite(dPage, newAddr, 4096);
 
             assert (!blockedForDyL);
@@ -6572,6 +6774,9 @@ MemCtrl::updateAndRemovePkt(PacketPtr pkt, MemInterface* mem_intr) {
 
             std::vector<uint8_t> write_data(inProcessPkt->getSize());
             memcpy(write_data.data(), inProcessPkt->getPtr<uint8_t>(), inProcessPkt->getSize());
+            checkCompressedWriteOverlapForDyL(
+                dram_addr, inProcessPkt->getSize(),
+                "functional-queue-origin-write");
             mem_intr->atomicWrite(write_data, dram_addr, inProcessPkt->getSize());
         }
 
@@ -6604,6 +6809,9 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             stats.memToCPUTotalBytes += pkt->getSize();
         } else {
             stats.cpuToMemTotalBytes += pkt->getSize();
+            checkCompressedWriteOverlapForDyL(
+                origin_pkt->getAddr(), origin_pkt->getSize(),
+                "timing-origin-write");
         }
         mem_intr->accessForDyL(origin_pkt, pkt);
 
@@ -6706,6 +6914,83 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         mem_intr->atomicRead(cPage.data(), page_addr, cpage_size);
         stats.memToCPUMigrationBytes += cpage_size;
 
+        const PPN ppn = aux_pkt->DyLBackup >> 12;
+        const Addr cte_addr = startAddrForCTE + ppn * 8;
+        const Addr cte_addr_aligned = (cte_addr >> 6) << 6;
+        const uint32_t cte_oft = (cte_addr >> 3) & 0x7;
+        std::vector<uint8_t> current_cte_block(64, 0);
+        mem_intr->atomicRead(
+            current_cte_block.data(), cte_addr_aligned,
+            current_cte_block.size());
+        uint64_t current_raw_cte = 0;
+        for (uint32_t i = cte_oft * 8; i < (cte_oft + 1) * 8; ++i) {
+            current_raw_cte =
+                (current_raw_cte << 8) | current_cte_block[i];
+        }
+
+        Addr current_cte_addr = 0;
+        uint32_t current_cte_size = 0;
+        const bool current_cte_valid =
+            isValidCTE(current_cte_block, cte_oft, false);
+        const bool current_cte_compressed = current_cte_valid &&
+            ((current_cte_block[cte_oft * 8] >> 6) & 0x1);
+        if (current_cte_valid) {
+            auto current_info = parsePageInfoForDyL(
+                current_cte_block, cte_oft, 1, ppn);
+            current_cte_addr = current_info.first;
+            current_cte_size = current_info.second;
+        }
+
+        const uint64_t read_hash =
+            dylectPayloadHash(cPage.data(), cPage.size());
+        const uint64_t read_head =
+            dylectPayloadHead(cPage.data(), cPage.size());
+        auto tracked = dylectCompressedDebugInfo.find(page_addr);
+        const bool is_tracked = tracked != dylectCompressedDebugInfo.end();
+        const bool cte_mismatch = !current_cte_compressed ||
+            current_cte_addr != page_addr ||
+            current_cte_size != cpage_size;
+        const bool owner_mismatch = is_tracked &&
+            (tracked->second.ppn != ppn ||
+             tracked->second.size != cpage_size);
+        const bool payload_mismatch = is_tracked &&
+            tracked->second.hash != read_hash;
+
+        printf("[DyL][CP-READ] tick=%llu ppn=%llu req_addr=0x%llx "
+               "req_size=%u hash=0x%llx head=0x%016llx "
+               "cte_raw=0x%016llx cte_valid=%u cte_compressed=%u "
+               "cte_addr=0x%llx cte_size=%u tracked=%u",
+            static_cast<unsigned long long>(curTick()),
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(page_addr), cpage_size,
+            static_cast<unsigned long long>(read_hash),
+            static_cast<unsigned long long>(read_head),
+            static_cast<unsigned long long>(current_raw_cte),
+            static_cast<unsigned>(current_cte_valid),
+            static_cast<unsigned>(current_cte_compressed),
+            static_cast<unsigned long long>(current_cte_addr),
+            current_cte_size, static_cast<unsigned>(is_tracked));
+        if (is_tracked) {
+            printf(" owner_ppn=%llu owner_size=%u owner_hash=0x%llx "
+                   "owner_gen=%llu",
+                static_cast<unsigned long long>(tracked->second.ppn),
+                tracked->second.size,
+                static_cast<unsigned long long>(tracked->second.hash),
+                static_cast<unsigned long long>(tracked->second.generation));
+        }
+        printf("\n");
+        if (cte_mismatch || owner_mismatch || payload_mismatch) {
+            printf("[DyL][CP-MISMATCH] tick=%llu ppn=%llu addr=0x%llx "
+                   "cte=%u owner=%u payload=%u\n",
+                static_cast<unsigned long long>(curTick()),
+                static_cast<unsigned long long>(ppn),
+                static_cast<unsigned long long>(page_addr),
+                static_cast<unsigned>(cte_mismatch),
+                static_cast<unsigned>(owner_mismatch),
+                static_cast<unsigned>(payload_mismatch));
+        }
+        fflush(stdout);
+
 
         // printf("the pkt address is 0x%llx\n", pkt);
         // printf("the page address is 0x%llx\n", page_addr);
@@ -6714,6 +6999,21 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         /* decompress the page */
         std::vector<uint8_t> dPage = decompressPage(cPage.data(), cpage_size);
 
+        panic_if(dPage.size() != 4096,
+            "DyLeCT compressed payload is corrupt: ppn=%llu addr=%#llx "
+            "size=%u hash=%#llx head=%#llx cte=%#llx. "
+            "Inspect CP-COMMIT/CP-REUSE/CP-READ/CP-MISMATCH logs.",
+            static_cast<unsigned long long>(ppn),
+            static_cast<unsigned long long>(page_addr), cpage_size,
+            static_cast<unsigned long long>(read_hash),
+            static_cast<unsigned long long>(read_head),
+            static_cast<unsigned long long>(current_raw_cte));
+
+        // Do not recycle the compressed slot until its payload has been
+        // validated. Recycling before the panic check hides the first
+        // corruption and can make a later run report a misleading reuse.
+        releaseCompressedPayloadForDyL(
+            ppn, page_addr, cpage_size, "timing-read");
         if (cpage_size <= 256) {
             smallFreeList.push_back(page_addr);
             stat_used_bytes -= 256;
@@ -6725,12 +7025,6 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             largeFreeList.push_back(page_addr);
             stat_used_bytes -= 2048;
         }
-    
-        panic_if(dPage.size() != 4096,
-            "DyLeCT compressed payload is corrupt: ppn=%llu addr=%#llx "
-            "size=%u. The CTE points to data that is not a 4KB zlib page.",
-            static_cast<unsigned long long>(aux_pkt->DyLBackup >> 12),
-            static_cast<unsigned long long>(page_addr), cpage_size);
         assert(freeList.size() > 0);
 
         /* mimic the latency of decompress operations */
@@ -6829,6 +7123,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
 
         std::vector<uint8_t> page(4096, 0);
         memcpy(page.data(), pkt->getPtr<uint8_t>(), 4096);
+        checkCompressedWriteOverlapForDyL(
+            target_addr, 4096, "ml0-write");
         mem_intr->atomicWrite(page, target_addr, 4096);
         stats.cpuToMemMigrationBytes += 4096;
         printf("[DyL][ML0-WRITE] ppn=%llu src=0x%llx dst=0x%llx pos=%u\n",
@@ -6868,6 +7164,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         /* step 2: write the data to memory */
         std::vector<uint8_t> page(4096);
         memcpy(page.data(), pkt->getPtr<uint8_t>(), 4096);
+        checkCompressedWriteOverlapForDyL(
+            pkt->getAddr(), 4096, "timing-decompress-write");
         mem_intr->atomicWrite(page, pkt->getAddr(), 4096);
         
         /* step 3: reset the waitForDecompress */
@@ -6896,16 +7194,35 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
 
         /* translate the dram address */
         resumeOriginAccessForDyL(aux_pkt, mem_intr);
+        tryDeletePktForDyL(pkt);
 
     } else if (packet_type == 0x10) {
         /* readColdPage */
         PacketPtr aux_pkt = pkt->DyLCandidate;
         if (pageInCompress.second) {
+            printf("[DyL][CCP-CANCEL-COMMIT] tick=%llu ppn=%llu "
+                   "source_addr=0x%llx\n",
+                static_cast<unsigned long long>(curTick()),
+                static_cast<unsigned long long>(pkt->compressPageId),
+                static_cast<unsigned long long>(pkt->getAddr()));
             compressColdPage(aux_pkt, mem_intr);
+            tryDeletePktForDyL(pkt);
             return;
         }
 
+        panic_if(!compressColdPageInProcess ||
+                 pkt->compressPageId != pageInCompress.first,
+                 "DyLeCT cold-page completion does not match active job: "
+                 "packet_ppn=%llu active_ppn=%llu active=%u",
+                 static_cast<unsigned long long>(pkt->compressPageId),
+                 static_cast<unsigned long long>(pageInCompress.first),
+                 static_cast<unsigned>(compressColdPageInProcess));
         assert(pkt->getSize() == 4096);
+        panic_if((pkt->getAddr() & 0xFFF) != 0,
+                 "DyLeCT cold-page source is not 4KB aligned: "
+                 "ppn=%llu addr=%#llx",
+                 static_cast<unsigned long long>(pkt->compressPageId),
+                 static_cast<unsigned long long>(pkt->getAddr()));
         std::vector<uint8_t> coldPage(4096);
         mem_intr->atomicRead(coldPage.data(), pkt->getAddr(), 4096);
 
@@ -6920,6 +7237,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             incompressiblePages.emplace(coldPagePPN);
             compressColdPageInProcess = false;
             compressColdPage(aux_pkt, mem_intr);
+            tryDeletePktForDyL(pkt);
             return;
         }
 
@@ -7007,10 +7325,17 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         // of view of subsequent DyLeCT translations.
         const PPN coldPagePPN = pkt->compressPageId;
         const Addr oldAddr = pkt->DyLBackup;
+        panic_if((oldAddr & 0xFFF) != 0,
+                 "DyLeCT attempted to return a compressed sub-block to "
+                 "the 4KB freeList: ppn=%llu old_addr=%#llx",
+                 static_cast<unsigned long long>(coldPagePPN),
+                 static_cast<unsigned long long>(oldAddr));
         panic_if(pkt->getSize() == 0 || pkt->getSize() > 2048,
                  "DyLeCT invalid compressed-page size %u for ppn %llu",
                  pkt->getSize(),
                  static_cast<unsigned long long>(coldPagePPN));
+        recordCompressedPayloadForDyL(
+            coldPagePPN, pkt->getAddr(), committedPage, "timing");
         updateMetaDataForDyL(coldPagePPN, pkt->getAddr(), 2, mem_intr,
                              pkt->getSize());
         clearML0TrackingForDyL(coldPagePPN);
@@ -7115,6 +7440,8 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 stat_used_bytes += 4096;
 
                 std::vector<uint8_t> zeroPage(4096, 0);
+                checkCompressedWriteOverlapForDyL(
+                    dram_addr, 4096, "read-cte-new-page-zero");
                 mem_intr->atomicWrite(zeroPage, dram_addr, 4096, 0);
                 updateMetaDataForDyL(ppn, dram_addr, 1, mem_intr);
                 registerUncompressedPageForDyL(ppn, dram_addr);
@@ -7217,6 +7544,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                 }
             }
         }
+        tryDeletePktForDyL(pkt);
     } else if (packet_type == 0x80) {
         panic("should never enter this");
     } else {
@@ -9150,14 +9478,21 @@ std::vector<uint8_t> MemCtrl::decompressPage(const uint8_t* compresseData, size_
 
 bool MemCtrl::compressColdPage(const PacketPtr& aux_pkt, MemInterface* mem_intr) {
     printf("CCP: stat_used_bytes: %lld, memoryUsageThreshold: %lld, recencyList.size(): %d\n", stat_used_bytes, memoryUsageThreshold, recencyList.size());
-    if (stat_used_bytes > memoryUsageThreshold && recencyList.size() > RECENCY_LIST_THREHOLD) {
+    assert(aux_pkt != nullptr);
+    assert(aux_pkt->DyLPType == 0x2);
+
+    // A caller may be completing or cancelling the previous background
+    // operation. Mark the engine idle until a valid uncompressed candidate
+    // has actually been selected below.
+    compressColdPageInProcess = false;
+
+    while (stat_used_bytes > memoryUsageThreshold &&
+           recencyList.size() > RECENCY_LIST_THREHOLD) {
         /* this will be done in the background, but also has impact on the performance */
         printf("enter compress cold page, the pkt address is 0x%llx\n", aux_pkt);
-        compressColdPageInProcess = true;
         PPN coldPageId = recencyList.back();
         recencyList.pop_back();
         recencyMap.erase(coldPageId);
-        pageInCompress = std::make_pair(coldPageId, false);
 
         /* 
         * read the cold page from memory
@@ -9168,17 +9503,47 @@ bool MemCtrl::compressColdPage(const PacketPtr& aux_pkt, MemInterface* mem_intr)
 
         Addr coldCteAddr = startAddrForCTE + coldPageId * 8;
         Addr coldCteAddrAligned = (coldCteAddr >> 6) << 6;
-        int8_t coldLoc = (coldCteAddr >> 3) & ((1 << 3) - 1);
+        uint32_t coldLoc = (coldCteAddr >> 3) & ((1 << 3) - 1);
 
         std::vector<uint8_t> cteBlock(64, 0);
         mem_intr->atomicRead(cteBlock.data(), coldCteAddrAligned, 64);
         stats.memToCPUMetaDataBytes += 64;
 
+        if (!isValidCTE(cteBlock, coldLoc, false)) {
+            printf("[DyL][CCP-SKIP] tick=%llu ppn=%llu reason=invalid-cte\n",
+                static_cast<unsigned long long>(curTick()),
+                static_cast<unsigned long long>(coldPageId));
+            continue;
+        }
+
+        if ((cteBlock[coldLoc * 8] >> 6) & 0x1) {
+            // A compressed page can re-enter the recency list while an
+            // access is waiting to decompress it. It must never be treated
+            // as a 4KB source page: doing so used to push a 256B chunk
+            // address into freeList and later overwrite sibling chunks.
+            auto compressed_info = parsePageInfoForDyL(
+                cteBlock, coldLoc, 1, coldPageId);
+            printf("[DyL][CCP-SKIP] tick=%llu ppn=%llu "
+                   "reason=already-compressed addr=0x%llx size=%u\n",
+                static_cast<unsigned long long>(curTick()),
+                static_cast<unsigned long long>(coldPageId),
+                static_cast<unsigned long long>(compressed_info.first),
+                compressed_info.second);
+            continue;
+        }
+
         std::pair<Addr, uint32_t> pageInfo = parsePageInfoForDyL(cteBlock, coldLoc, 1);
+        panic_if(pageInfo.second != 4096 || (pageInfo.first & 0xFFF) != 0,
+                 "DyLeCT cold compression selected a non-page source: "
+                 "ppn=%llu addr=%#llx size=%u",
+                 static_cast<unsigned long long>(coldPageId),
+                 static_cast<unsigned long long>(pageInfo.first),
+                 pageInfo.second);
+
+        compressColdPageInProcess = true;
+        pageInCompress = std::make_pair(coldPageId, false);
 
         PacketPtr readColdPage = new Packet(aux_pkt);
-        assert (aux_pkt != nullptr);
-        assert (aux_pkt->DyLPType == 0x2);
         readColdPage->configAsReadColdPage(pageInfo.first, coldPageId);
         aux_pkt->ref_cnt++;
 
@@ -9198,6 +9563,7 @@ bool MemCtrl::compressColdPage(const PacketPtr& aux_pkt, MemInterface* mem_intr)
         return false;
     }
 
+    pageInCompress = std::make_pair(0, true);
     return true;
 
     // // DPRINTF(MemCtrl, "[compress?] The current freelist size is %lld\n", freeList.size());
@@ -10035,6 +10401,18 @@ bool
 MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
     pkt->DyLBackup = pkt->getAddr();
 
+    const PPN incoming_ppn = pkt->getAddr() >> 12;
+    if (compressColdPageInProcess &&
+        incoming_ppn == pageInCompress.first &&
+        !pageInCompress.second) {
+        pageInCompress.second = true;
+        printf("[DyL][CCP-CANCEL-ACCESS] tick=%llu kind=functional "
+               "ppn=%llu cmd=%s\n",
+            static_cast<unsigned long long>(curTick()),
+            static_cast<unsigned long long>(incoming_ppn),
+            pkt->cmdString().c_str());
+    }
+
     if (pkt->DyLPType != 0x100 && isAddressCovered(pkt->getAddr(), 0, 0)) {
         printf("\n\n**************\n\n");
         printf("curTick is %ld\n", curTick());
@@ -10580,6 +10958,8 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
         stat_used_bytes += 4096;
 
         std::vector<uint8_t> zeroPage(4096, 0);
+        checkCompressedWriteOverlapForDyL(
+            addr, 4096, "functional-new-page-zero");
         mem_intr->atomicWrite(zeroPage, addr, 4096, 0);
 
         // update the CTE
@@ -10617,7 +10997,19 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             // Decompress and copy the data to the new page
             std::vector<uint8_t> decompressedPage = decompressPage(pageBuffer.data(), compressedSize);
 
-            mem_intr->atomicWrite(decompressedPage, addr, decompressedPage.size());
+            panic_if(decompressedPage.size() != 4096,
+                     "DyLeCT functional decompression failed: ppn=%llu "
+                     "addr=%#llx size=%llu",
+                     static_cast<unsigned long long>(ppn),
+                     static_cast<unsigned long long>(oldAddr),
+                     static_cast<unsigned long long>(compressedSize));
+            releaseCompressedPayloadForDyL(
+                ppn, oldAddr, compressedSize, "functional-read");
+
+            checkCompressedWriteOverlapForDyL(
+                addr, decompressedPage.size(), "functional-decompress-write");
+            mem_intr->atomicWrite(
+                decompressedPage, addr, decompressedPage.size());
             if (compressedSize <= 256) {
                 smallFreeList.push_back(oldAddr);
                 stat_used_bytes -= 256;
@@ -10743,9 +11135,18 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
             
             printf("coldCteAddrAligned 0x%llx\n", coldCteAddrAligned);
             mem_intr->atomicWrite(compressedPage, newAddr, compressedPage.size());
+            recordCompressedPayloadForDyL(
+                coldPageId, newAddr, compressedPage, "functional");
         
             // update the CTE (uncompressed to compressed)
             newCTE = (1ULL << 63) | (1ULL << 62) | (((cSize - 1) & ((1ULL << 12) - 1)) << 50) | ((newAddr >> 8) << 10);
+            printf("[DyL][CTE-WRITE] tick=%llu source=functional ppn=%llu "
+                   "addr=0x%llx size=%llu raw=0x%016llx\n",
+                static_cast<unsigned long long>(curTick()),
+                static_cast<unsigned long long>(coldPageId),
+                static_cast<unsigned long long>(newAddr),
+                static_cast<unsigned long long>(cSize),
+                static_cast<unsigned long long>(newCTE));
             printf("the new CTE is %llx\n", newCTE);
             // update CTE in memory
             for (int i = 8 * coldLoc + 7; i >= 8 * coldLoc; i--) {
@@ -10782,6 +11183,11 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
         pkt->setAddr(realAddr);
         // rely on the abstract memory
+
+        if (pkt->isWrite()) {
+            checkCompressedWriteOverlapForDyL(
+                pkt->getAddr(), pkt->getSize(), "functional-origin-write");
+        }
 
         if (pkt->DyLPType == 0x100) {
             // if (pkt->isWrite()) {
@@ -12542,6 +12948,7 @@ MemCtrl::afterDecompForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 
     /* write back the uncompressed page to memory */
     PacketPtr writeUncompress = new Packet(pkt);
+    pkt->ref_cnt++;
     // printf("create new pkt for writeUncompress 0x%lx\n", writeUncompress);
 
     // DPRINTF(MemCtrl, "Line %d: create a new packet for write Uncompress, the address is 0x%llx\n", __LINE__, (uint64_t)writeUncompress);

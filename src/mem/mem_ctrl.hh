@@ -1085,8 +1085,8 @@ class MemCtrl : public qos::MemCtrl
     */
     std::list<PacketPtr> inProcessPkts;
 
-    // Internal DyLeCT writes can complete logically at enqueue time, while
-    // their MemPacket bursts still retain the PacketPtr in the write queue.
+    // DyLeCT writes can complete logically at enqueue time. All queued
+    // MemPacket bursts for one PacketPtr collectively own one reference.
     std::unordered_map<PacketPtr, uint32_t> dylectWriteBurstsAwaitingIssue;
 
     uint64_t decompress_latency;
@@ -1100,6 +1100,21 @@ class MemCtrl : public qos::MemCtrl
     std::unordered_set<PPN> incompressiblePages;
     std::unordered_map<PPN, Addr> uncompressedLocationForDyL;
     std::unordered_map<Addr, PPN> uncompressedOwnerForDyL;
+
+    struct DylectCompressedDebugInfo
+    {
+        PPN ppn;
+        uint32_t size;
+        uint64_t hash;
+        uint64_t generation;
+    };
+
+    // Debug-only ownership information for compressed slots. This is not
+    // architectural state and intentionally does not need checkpointing.
+    std::unordered_map<Addr, DylectCompressedDebugInfo>
+        dylectCompressedDebugInfo;
+    uint64_t dylectCompressedGeneration = 0;
+
     std::list<uint64_t> smallFreeList;          // the free list for the 256B memory block
     std::list<uint64_t> moderateFreeList;       // the free list for the 1024B memory block
     std::list<uint64_t> largeFreeList;          // the free list for the 2kB memory block
@@ -1670,6 +1685,16 @@ class MemCtrl : public qos::MemCtrl
     void updatePreGatherForDyL(uint64_t ppn, MemInterface* mem_intr, uint8_t loc = 4);
 
     void updateMetaDataForDyL(uint64_t ppn, Addr page_dram_addr, uint8_t page_level, MemInterface* mem_intr, uint32_t compressed_size = 0, uint8_t loc = 4);
+
+    void recordCompressedPayloadForDyL(PPN ppn, Addr addr,
+                                       const std::vector<uint8_t>& payload,
+                                       const char* source);
+
+    void releaseCompressedPayloadForDyL(PPN ppn, Addr addr, uint32_t size,
+                                        const char* source);
+
+    void checkCompressedWriteOverlapForDyL(Addr addr, uint32_t size,
+                                           const char* source);
 
     void registerUncompressedPageForDyL(PPN ppn, Addr page_dram_addr);
 
