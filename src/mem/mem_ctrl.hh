@@ -370,9 +370,6 @@ class MemCtrl : public qos::MemCtrl
     bool addToReadQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
-    bool addToReadQueueForNew(PacketPtr pkt, unsigned int pkt_count,
-                        MemInterface* mem_intr);
-
     bool addToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
@@ -394,9 +391,6 @@ class MemCtrl : public qos::MemCtrl
                          MemInterface* mem_intr);
 
     void addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
-                         MemInterface* mem_intr);
-
-    bool addToWriteQueueForNew(PacketPtr pkt, unsigned int pkt_count,
                          MemInterface* mem_intr);
 
     void addToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
@@ -430,9 +424,6 @@ class MemCtrl : public qos::MemCtrl
                                                 MemInterface* mem_intr);
 
     virtual void accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
-                                                MemInterface* mem_intr);
-
-    virtual void accessAndRespondForNew(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
 
     virtual void accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
@@ -1094,6 +1085,10 @@ class MemCtrl : public qos::MemCtrl
     */
     std::list<PacketPtr> inProcessPkts;
 
+    // Internal DyLeCT writes can complete logically at enqueue time, while
+    // their MemPacket bursts still retain the PacketPtr in the write queue.
+    std::unordered_map<PacketPtr, uint32_t> dylectWriteBurstsAwaitingIssue;
+
     uint64_t decompress_latency;
     uint64_t compress_latency;
     
@@ -1557,19 +1552,16 @@ class MemCtrl : public qos::MemCtrl
     bool recvTimingReqLogic(PacketPtr pkt);
     bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
     bool recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked = false);
-    bool recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked = false);
     bool recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked = false);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
-    bool recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool hasBlocked = false);
     bool recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr);
 
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
-    Tick recvAtomicLogicForNew(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr);
 
     /* ====== useful functions for compresso implementation =====*/
@@ -1720,43 +1712,6 @@ class MemCtrl : public qos::MemCtrl
 
     bool compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_intr);
     /* ====== end for DyLeCT ===== */
-    /* ====== start for new ===== */
-
-    uint8_t new_getType(const std::vector<uint8_t>& metaData, const uint8_t& index);
-
-    void new_setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type);
-
-    uint8_t new_getCoverage(const std::vector<uint8_t>& metaData);
-
-    void new_allocateBlock(std::vector<uint8_t>& metaData, uint8_t index);
-
-    std::vector<uint64_t> new_addressTranslation(const std::vector<uint8_t>& metaData, uint8_t cacheLineIdx);
-
-    Addr calOverflowAddr(const std::vector<uint8_t>& metaData, uint8_t overflowIdx);
-
-    void new_restoreData(std::vector<uint8_t>& cacheLine, uint8_t type);
-
-    void new_updateMetaData(const std::vector<uint8_t>& compressed_data, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx, MemInterface* mem_intr);
-
-    void decompressForNew(std::vector<uint8_t>& cacheLine);
-
-    std::vector<uint8_t> compressForNew(const std::vector<uint8_t>& cacheLine);
-
-    void prepareMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr);
-
-    void assignToQueueForNew(PacketPtr pkt);
-
-    void issueWriteCmdForNew(PacketPtr pkt, Addr addr, unsigned size, MemInterface* mem_intr, bool recordStat = true);
-
-    void updateMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr);
-
-    void readForRecompress(PacketPtr pkt, MemInterface* mem_intr);
-
-    void recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData);
-
-    void atomicRecompressForNew(std::vector<uint8_t>& page, std::vector<uint8_t>& metaData, MemInterface* mem_intr);
-
-    /* ===== end for new ===== */
 
     /* ===== start functionality for secure ===== */
 

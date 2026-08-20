@@ -17,7 +17,7 @@ parser.add_argument(
 parser.add_argument(
     "--recency_list_size",
     type=int,
-    default=0,
+    default=100,
     help="determine the size of recency list, only helpful in DyLeCT mode",
 )
 
@@ -38,7 +38,7 @@ system.clk_domain.voltage_domain = VoltageDomain()
 
 # Set up the system
 system.mem_mode = "timing"  # Use timing accesses
-system.mem_ranges = [AddrRange("512MiB")]  # Create an address range
+system.mem_ranges = [AddrRange("4MiB")]  # Create an address range
 
 system.cpu = DerivO3CPU()
 

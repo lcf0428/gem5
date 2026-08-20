@@ -57,8 +57,8 @@ VICTIM_SUFFIX_LEN = 15
 
 # 原逻辑：
 #   process.cmd = [binary, usr_passwd, "aaaaaaa"]
-VICTIM_SECOND_ARG = "aaaaaaa"
-# VICTIM_SECOND_ARG = "111aaaa"
+# VICTIM_SECOND_ARG = "aaaaaaa"
+VICTIM_SECOND_ARG = "111aaaa"
 
 # 如果 victim 依赖工作目录，可以填绝对路径；不需要就保持 None
 VICTIM_CWD = None

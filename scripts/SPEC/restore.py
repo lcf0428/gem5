@@ -164,6 +164,29 @@ recency_list_sizes = [
     1853443
 ]
 
+small_memory_capacity = [
+    # 0,
+    28042150,
+    000,  # mcf
+    996406,
+    1074414,
+    925686,
+    28852437,
+    000,  # leela
+    000,  # exchange2
+    66393020,
+    64689084,
+    20885996,
+    16902020,
+    1389650,
+    # 0,
+    # 0,
+    8483082,
+    127212,
+    000, # fotonik3d ?
+    44681162,
+]
+
 operation_mode = sys.argv[1]
 operation_mode = str(operation_mode)
 
@@ -171,11 +194,12 @@ HOME = "/local/home/liuche"
 BASE_DIR = f"{HOME}/SPEC"  # TODO: change the SPEC directory
 GEM5_DIR = f"{HOME}/gem5/gem5"  # TODO: change the gem5 directory
 BUILD_DIR = f"{HOME}/gem5_results/SPEC/build"
-RESULTS_DIR = f"{HOME}/gem5_results/SPEC/restore"
+# RESULTS_DIR = f"{HOME}/gem5_results/SPEC/restore"
+RESULTS_DIR = f"{HOME}/test/restore"
 SIMULATE_DIR = f"{GEM5_DIR}/scripts/SPEC"
 
 
-restore_list = [15]
+restore_list = [14]
 
 # for i in range(len(programs)):
 # for i in range (2):
@@ -194,7 +218,10 @@ for i in restore_list:
     sim_out = f"restore_{program}_{operation_mode}.out"
 
     # checkpoint = "{}/gem5_results/SPEC/checkpoint/{}/{}/cpt".format(HOME, operation_mode, program)
-    base_path = "{}/gem5_results/SPEC/checkpoint/{}/{}".format(
+    # base_path = "{}/gem5_results/SPEC/checkpoint/{}/{}".format(
+    #     HOME, operation_mode, program
+    # )
+    base_path = "{}/test/checkpoint/{}_same/{}".format(
         HOME, operation_mode, program
     )
     cpt_folders = glob.glob(os.path.join(base_path, "cpt.*"))
@@ -203,10 +230,11 @@ for i in restore_list:
         checkpoint = cpt_folders[0]
         print(f"find the directory {checkpoint}")
     else:
+        print(f"[ERROR] could not find the directory in {base_path}")
         exit(1)
 
     cur_input = stdin_file[i]
-    recency_list_size = recency_list_sizes[i]
+    recency_list_size = small_memory_capacity[i]
 
     if cur_input:
         gem5_cmd = "nohup {}/build/X86/gem5.opt -d {} {}/configs/example/gem5_library/checkpoints/simpoints-se-restore-new.py \

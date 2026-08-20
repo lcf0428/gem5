@@ -1921,7 +1921,7 @@ class Packet : public Printable, public Extensible<Packet>
 
     void configAsReadColdPage(const Addr& addr, uint64_t pageId);
 
-    void configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page);
+    void configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page, uint64_t page_id, Addr source_addr);
 
     // void configAsReadUncompress(const Addr& addr, PacketPtr p, uint64_t pageId);
     // void configAsWriteCompress(const Addr& addr, uint64_t total_size, PacketPtr p, std::vector<uint8_t>& page);

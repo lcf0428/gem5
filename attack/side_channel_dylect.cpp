@@ -11,7 +11,8 @@
 volatile uint8_t sink;
 volatile uint8_t aux;
 
-#define EXHAUSTED_NUM 300
+#define EXHAUSTED_NUM 550
+#define REPEATED_TIMES 8
 
 int main() {
 
@@ -21,18 +22,18 @@ int main() {
     
     uint8_t* victim_page = static_cast<uint8_t*>(ptr);
 
-    for (int i = 0; i < 4096; i++) {
-        victim_page[i] = 0;
-    }
-
-    victim_page[0] = 41;
-
-
-    // for (int i = 0; i < 64; i++) {
-    //     for (int j = 0; j < 64; j++) {
-    //         victim_page[i * 64 + j] = (i * 64 + j) % (17 + i);
-    //     }
+    // for (int i = 0; i < 4096; i++) {
+    //     victim_page[i] = 0;
     // }
+
+    // victim_page[0] = 41;
+
+
+    for (int i = 0; i < 64; i++) {
+        for (int j = 0; j < 64; j++) {
+            victim_page[i * 64 + j] = (i * 64 + j) % (17 + i);
+        }
+    }
 
     _mm_mfence();
 
@@ -47,21 +48,28 @@ int main() {
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     }
 
-    for (int i = 0; i < EXHAUSTED_NUM; i++) {
-        uint64_t* uint64_p = (uint64_t*)e_ptr[i];
-        uint64_p[0] = i + 1; 
-    }
-
-    for (int i = 0; i < EXHAUSTED_NUM; i++) {
-        _mm_clflush(e_ptr[i]);
-    }
-
-    _mm_mfence();
-
     m5_reset_stats(0, 0);
-    // _mm_mfence();
-    sink = victim_page[1];
-    // _mm_mfence();
+
+    for (int j = 0; j < REPEATED_TIMES; j++) {
+        for (int i = 0; i < EXHAUSTED_NUM; i++) {
+            uint64_t* uint64_p = (uint64_t*)e_ptr[i];
+            uint64_p[0] = i + 1; 
+        }
+
+        for (int i = 0; i < EXHAUSTED_NUM; i++) {
+            _mm_clflush(e_ptr[i]);
+        }
+
+        _mm_mfence();
+
+        // m5_reset_stats(0, 0);
+        // _mm_mfence();
+        sink = victim_page[1];
+        // sink = ((uint8_t*)e_ptr[EXHAUSTED_NUM - 1])[1];
+        _mm_mfence();
+        // m5_dump_stats(0, 0);
+    }
+
     m5_dump_stats(0, 0);
 
     return 0;

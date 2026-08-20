@@ -78,9 +78,9 @@ binary = os.path.join(
     thispath,
     "../../../",
     # "tests/test-progs/hello/bin/x86/linux/hello",
-    # "attack/side_channel2",
+    # "attack/side_channel_dylect",
     # "../../stress-ng/stress-ng",
-    "../../nginx/end-to-end3/victim/victim",
+    "attack/nginx/end-to-end3/victim/victim",
     # "tests/test-progs/threads/bin/x86/linux/threads",
     # "../../Mibench/mibench/automotive/basicmath/basicmath_small",
     # "../../mibench/mibench/security/sha/sha",
@@ -119,7 +119,7 @@ process = Process()
 # ]
 # process.cmd = [binary, usr_passwd, "aaaaaaa"]
 process.cmd = [binary, usr_passwd, "111aaaa"]
-# process.cmd = [binary, "/local/home/liuche/Mibench/mibench/automotive/qsort/input_large.dat"]
+# process.cmd = [binary, "/local/home/liuche/Mibless ench/mibench/automotive/qsort/input_large.dat"]
 system.cpu.workload = process
 system.cpu.createThreads()
 

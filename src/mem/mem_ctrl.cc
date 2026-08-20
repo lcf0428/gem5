@@ -72,10 +72,6 @@ namespace gem5
     bool initPhaseCompleted = false;
 
     bool isAddressCovered(uintptr_t start_addr, size_t pkt_size, int type) {
-        // uintptr_t target_addr = 0x131898;
-        // pkt_size = 4096;
-        // start_addr = (start_addr >> 12) << 12;
-        // return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
         // if (type == 0) {
         //     return true;
         // } else {
@@ -83,18 +79,6 @@ namespace gem5
         // }
         return false;
         // return true;
-
-        // if (access_cnt < 700000000) {
-        //     return false;
-        // } else if (access_cnt < 1350000000) {
-        //     // return true;
-        //     uintptr_t target_addr = 0x2183020;
-        //     pkt_size = 4096;
-        //     start_addr = (start_addr >> 12) << 12;
-        //     return (target_addr >= start_addr) && (target_addr < start_addr + pkt_size);
-        // } else {
-        //     exit(1);
-        // }
     }
 
     bool coverageTestMC(Addr start_addr, Addr target_addr, size_t pkt_size) {
@@ -224,8 +208,6 @@ MemCtrl::init()
         printf("enter the compresso mode\n");
     } else if (operationMode == "DyLeCT") {
         printf("enter the DyLeCT mode\n");
-    } else if (operationMode == "new") {
-        printf("enter the new mode\n");
     } else if (operationMode == "secure") {
         printf("enter the secure mode\n");
     } else {
@@ -296,23 +278,6 @@ MemCtrl::init()
         }
 
         pageInCompress = std::make_pair(0, true);
-    } else if (operationMode == "new") {
-        panic("this operation mode is depreated!");
-        /* deprecated */
-        zeroAddr = 64 * numPages;
-        realStartAddr = ((zeroAddr + 64 + 1023) >> 10) << 10;
-        uint64_t dramCapacity = (dram->capacity() * (1024 * 1024));
-        assert(realStartAddr < dramCapacity);
-        for (Addr addr = realStartAddr; (addr + 1024) <= dramCapacity; addr += 1024) {
-            freeList.emplace_back(addr);
-        }
-        sizeMap = {1, 22, 44, 64};
-        pageSizeMap = {0, 512, 1024, 2048, 3072, 4096, 4608, 5120, 6144, 7168};
-
-        originMetaData.resize(64);
-        memset(originMetaData.data(), 0, 64);
-        originMetaData[0] = 0x80;
-        originMetaData[1] = 1;
     } else if (operationMode == "secure") {
         startAddrForSecureMetaData = 0;
         Addr realStartAddr = ALIGN(startAddrForSecureMetaData + numPages * 8);
@@ -360,7 +325,8 @@ MemCtrl::serialize(gem5::CheckpointOut &cp) const {
         // custom DyLeCT migration pipeline.
         panic_if(pendingML0MigrationForDyL.valid() || readML1InWait ||
                  readCompressInWait || waitForDecompress.first ||
-                 !blockedQueueForDyL.empty(),
+                 !blockedQueueForDyL.empty() ||
+                 !dylectWriteBurstsAwaitingIssue.empty(),
                  "DyLeCT checkpoint requires a drained migration pipeline");
         SERIALIZE_CONTAINER(freeList);
         SERIALIZE_CONTAINER(smallFreeList);
@@ -525,15 +491,15 @@ MemCtrl::unserialize(gem5::CheckpointIn &cp) {
             recencyMap[*it] = it;
         }
     } else {
-        // UNSERIALIZE_CONTAINER(freeList);
+        UNSERIALIZE_CONTAINER(freeList);
     }
 
-    // UNSERIALIZE_SCALAR(pageNum);
-    // UNSERIALIZE_SCALAR(hasBuffered);
-    // UNSERIALIZE_SCALAR(stat_used_bytes);
-    // printf("when unserialize, the stat used bytes are %ld\n", stat_used_bytes);
-    // UNSERIALIZE_SCALAR(passedInterval);
-    // UNSERIALIZE_SCALAR(lastRecordTick);
+    UNSERIALIZE_SCALAR(pageNum);
+    UNSERIALIZE_SCALAR(hasBuffered);
+    UNSERIALIZE_SCALAR(stat_used_bytes);
+    printf("when unserialize, the stat used bytes are %ld\n", stat_used_bytes);
+    UNSERIALIZE_SCALAR(passedInterval);
+    UNSERIALIZE_SCALAR(lastRecordTick);
 }
 
 void
@@ -581,8 +547,6 @@ MemCtrl::recvAtomic(PacketPtr pkt)
         res = recvAtomicLogicForCompr(pkt, dram);
     } else if (operationMode == "DyLeCT") {
         res = recvAtomicLogicForDyL(pkt, dram);
-    } else if (operationMode == "new") {
-        res = recvAtomicLogicForNew(pkt, dram);
     } else if (operationMode == "secure") {
         res = recvAtomicLogicForSecure(pkt, dram);
     } else {
@@ -1383,293 +1347,6 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 }
 
 Tick
-MemCtrl::recvAtomicLogicForNew(PacketPtr pkt, MemInterface* mem_intr) {
-    DPRINTF(MemCtrl, "recvAtomic: %s 0x%x\n",
-                     pkt->cmdString(), pkt->getAddr());
-
-    panic_if(pkt->cacheResponding(), "Should not see packets where cache "
-             "is responding");
-
-    if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)){
-        printf("recv Atomic: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
-    }
-
-    if (pkt->isWrite()) {
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
-            printf("Atomic write marker: ");
-            // printf("marker:%lx\n", pkt);
-            // printf("Timing read marker: ");
-            uint8_t* start = pkt->getPtr<uint8_t>();
-            for (int ts = 0; ts < pkt->getSize(); ts++) {
-                printf("%02x ", static_cast<unsigned int>(start[ts]));
-            }
-            printf("\n");
-            fflush(stdout);
-        }
-    }
-
-    if (curTick() - lastRecomprTick >= recomprInterval) {
-        lastRecomprTick = curTick();
-        /* recompress a page */
-        PPN target_page = 0;
-        target_page = mcache.chooseTarget() / 64;
-        // printf("recompress: the target page num is %d\n", target_page);
-
-        std::vector<uint8_t> metaData(64, 0);
-        Addr memory_addr = target_page * 64;
-        mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-
-        // printf("[recompr]: the old metaData is \n");
-        // for (int k = 0; k < 64; k++) {
-        //     printf("%02x",static_cast<unsigned>(metaData[k]));
-        // }
-        // printf("\n");
-
-        uint8_t num_blocks = metaData[1];
-        std::vector<uint8_t> page(pageSizeMap[num_blocks]);
-
-        /* read the old page */
-        for (int i = 0; i < num_blocks; i++) {
-            Addr block_addr = 0;
-            for (int j = 0; j < 4; j++) {
-                block_addr = (block_addr << 8) | (metaData[4 * i + 4 + j]);
-            }
-            block_addr = block_addr << 9;
-            Addr block_size = pageSizeMap[i + 1] - pageSizeMap[i];
-            mem_intr->atomicRead(page.data() + pageSizeMap[i], block_addr, block_size);
-        }
-        atomicRecompressForNew(page, metaData, mem_intr);
-
-        // printf("[recompr]: the new metaData is: \n");
-        // for (int k = 0; k < 64; k++) {
-        //     printf("%02x",static_cast<unsigned>(metaData[k]));
-        // }
-        // printf("\n");
-
-        if (mcache.isExist(memory_addr)){
-            mcache.updateIfExist(memory_addr, metaData);
-        }
-        mem_intr->atomicWrite(metaData, memory_addr, 64);
-    }
-
-    /* real process the incoming pkt */
-
-    unsigned size = pkt->getSize();
-    uint32_t burst_size = mem_intr->bytesPerBurst();
-    unsigned offset = pkt->getAddr() & (burst_size - 1);
-    unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-    /* Step 0: create an auxPkt for write */
-    PacketPtr aux_pkt = new Packet(pkt);
-    aux_pkt->new_subPktCnt = pkt_count;
-    aux_pkt->allocateForMC();
-    memcpy(aux_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-    for (unsigned int i = 0; i < pkt_count; i++) {
-        /* for each sub-block, create a sub-pkt to process */
-        PacketPtr sub_pkt = new Packet(aux_pkt);
-        sub_pkt->configAsSubPkt(aux_pkt, i);
-
-        /* prepare metadata */
-        PPN ppn = (sub_pkt->getAddr() >> 12 & ((1ULL << 52) - 1));
-
-        /* step 1.1: calculate the MPA for metadata */
-        Addr memory_addr = ppn * 64;
-        std::vector<uint8_t> metaData(64, 0);
-
-        if (mcache.isExist(memory_addr)) {
-            sub_pkt->newMetaData = mcache.find(memory_addr);
-        } else {
-            mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-            if (!isValidMetaData(metaData)) {
-                metaData = originMetaData;
-                new_allocateBlock(metaData, 1);
-            }
-            sub_pkt->newMetaData = metaData;
-        }
-
-        /*
-            update the metadata when necessary, processing the sub-pkt so that
-            pkt->getAddr() return the mpa address,
-            the size also should be in alignment with the compressed form
-        */
-        updateMetaDataForNew(sub_pkt, mem_intr);
-
-        // printf("ppn is %d, the metadata is \n", ppn);
-        // for (int k = 0; k < 64; k++) {
-        //     printf("%02x",static_cast<unsigned>(sub_pkt->newMetaData[k]));
-        // }
-        // printf("\n");
-
-
-        /* update the metadata in mcache & memory */
-        metaData = sub_pkt->newMetaData;
-        mcache.add(memory_addr, metaData);
-        mem_intr->atomicWrite(metaData, memory_addr, 64);
-
-        Addr origin_addr = sub_pkt->new_origin;  /* the origin address in OSPA space */
-
-        if (sub_pkt->isRead()) {
-
-            uint8_t cacheLineIdx = (origin_addr >> 6) & 0x3F;
-            uint8_t type = new_getType(metaData, cacheLineIdx);
-            Addr new_addr = 0;
-            uint8_t coverage = new_getCoverage(metaData);
-
-
-            if (coverage > cacheLineIdx && (type >= 0b100)) {
-                uint64_t backup_size = sub_pkt->getSize();
-                sub_pkt->setSizeForMC(1);
-                // printf("[READ]: first access, the addr is 0x%lx, the size is 0x%d\n", sub_pkt->getAddr(), sub_pkt->getSize());
-                mem_intr->accessForNew(sub_pkt, 1);
-                sub_pkt->setSizeForMC(backup_size);
-            } else {
-                // printf("[READ]: first access, the addr is 0x%lx, the size is 0x%d\n", sub_pkt->getAddr(), sub_pkt->getSize());
-                mem_intr->accessForNew(sub_pkt, 1);
-            }
-
-            if (coverage <= cacheLineIdx) {
-                assert(type == 0);
-                assert(sub_pkt->suffixLen == 0);
-                new_addr = zeroAddr;
-            } else {
-                if (type >= 0b100) {
-                    assert(sub_pkt->suffixLen == 0);
-                    uint8_t overflowIdx = *(sub_pkt->getPtr<uint8_t>());
-                    new_addr = calOverflowAddr(metaData, overflowIdx);
-                } else {
-                    new_addr = burstAlign(sub_pkt->getAddr(), mem_intr) + burst_size;
-                    if (sub_pkt->suffixLen != 0) {
-                        new_addr = sub_pkt->newBlockAddr;
-                    }
-                }
-
-            }
-            Addr start_addr = (type >= 0b100)?(new_addr):(sub_pkt->getAddr());
-            PacketPtr readTwice = new Packet(sub_pkt);
-            readTwice->configAsReadTwice(sub_pkt, new_addr, start_addr);
-
-            readTwice->setAddr(readTwice->new_origin);
-
-            mem_intr->accessForNew(readTwice, 1);
-            // printf("[read] twice, the address is 0x%lx, the size is %d\n", readTwice->getAddr(), readTwice->getSize());
-
-            std::vector<uint8_t> cacheLine(64, 0);
-
-            cacheLineIdx = (origin_addr >> 6) & 0x3F;
-            type = new_getType(sub_pkt->newMetaData, cacheLineIdx);
-
-            memcpy(cacheLine.data(), readTwice->getPtr<uint8_t>(), readTwice->getSize());
-
-            // if (isAddressCovered(aux_pkt->getAddr(), aux_pkt->getSize(), 1)) {
-            //     printf("before restore , the data is\n");
-            //     for (int i = 0; i < pkt->getSize(); i++) {
-            //         if (i % 8 == 0) {
-            //             printf("\n");
-            //         }
-            //         printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-            //     }
-            //     printf("\n");
-            // }
-
-            new_restoreData(cacheLine, type);
-
-            // if (isAddressCovered(aux_pkt->getAddr(), aux_pkt->getSize(), 1)) {
-            //     printf("the original address of sub-pkt is 0x%lx\n", origin_addr);
-            //     printf("ppn is %d, the metadata is:\n", (origin_addr >> 12));
-            //     for (int k = 0; k < 64; k++) {
-            //         printf("%02x",static_cast<unsigned>(sub_pkt->newMetaData[k]));
-            //     }
-            //     printf("\n");
-            //     printf("the readed cacheline is:");
-
-            //     for (int i = 0; i < cacheLine.size(); i++) {
-            //         if (i % 8 == 0) {
-            //             printf("\n");
-            //         }
-            //         printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-            //     }
-            //     printf("\n");
-            // }
-
-            uint64_t cur_loc = origin_addr & 0x3F;
-            uint64_t cur_size = std::min(64UL - cur_loc, aux_pkt->getAddr() + aux_pkt->getSize() - origin_addr);
-
-            assert(aux_pkt->getAddr() <= origin_addr);
-
-            uint64_t offset = origin_addr - aux_pkt->getAddr();
-            if (offset != 0) {
-                assert(cur_loc == 0);
-            }
-            memcpy(aux_pkt->getPtr<uint8_t>() + offset, cacheLine.data() + cur_loc, cur_size);
-
-            aux_pkt->new_subPktCnt--;
-            delete readTwice;
-            delete sub_pkt;
-
-        } else {
-            assert(pkt->isWrite());
-            uint8_t cacheLineIdx = (origin_addr >> 6) & 0x3F;
-            uint8_t type = new_getType(metaData, cacheLineIdx);
-            if (type >= 0b100) {
-                /* the real data is in the overflow region */
-
-                assert(sub_pkt->getSize() == 64);
-                uint8_t overflowIdx = 0;
-
-                mem_intr->atomicRead(&overflowIdx, sub_pkt->getAddr(), 1);
-
-                Addr real_addr = calOverflowAddr(metaData, overflowIdx);
-                sub_pkt->setAddr(real_addr);
-            }
-            mem_intr->accessForNew(sub_pkt, 1);
-
-            aux_pkt->new_subPktCnt--;
-            delete sub_pkt;
-        }
-    }
-
-
-    /* aux pkt */
-    assert(aux_pkt->new_backup);
-
-    bool needsResponse = pkt->needsResponse();
-
-    panic_if(!mem_intr->getAddrRange().contains(pkt->getAddr()),
-                "Can't handle address range for packet %s\n", pkt->print());
-
-    if (pkt->isRead()) {
-        assert(pkt->getSize() == aux_pkt->getSize());
-        memcpy(pkt->getPtr<uint8_t>(), aux_pkt->getPtr<uint8_t>(), pkt->getSize());
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
-            printf("Atomic read marker: ");
-            // printf("marker:%lx\n", pkt);
-            // printf("Timing read marker: ");
-            uint8_t* start = pkt->getPtr<uint8_t>();
-            for (int ts = 0; ts < pkt->getSize(); ts++) {
-                printf("%02x ", static_cast<unsigned int>(start[ts]));
-            }
-            printf("\n");
-            fflush(stdout);
-        }
-
-    }
-
-    mem_intr->accessForNew(aux_pkt, 0);
-
-    delete aux_pkt;
-
-    if (pkt->hasData()) {
-        // this value is not supposed to be accurate, just enough to
-        // keep things going, mimic a closed page
-        // also this latency can't be 0
-        return mem_intr->accessLatency();
-    }
-
-    return 0;
-}
-
-Tick
 MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     DPRINTF(MemCtrl, "recvAtomic: %s 0x%x\n",
                      pkt->cmdString(), pkt->getAddr());
@@ -1758,16 +1435,6 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             if (cPage.size() <= 2048) {
                 /* the page is compressible */
                 Addr new_chunk_addr = allocateChunkForSecure(0);
-
-                // if (new_chunk_addr <= 0x1378d0 && new_chunk_addr + cPage.size() > 0x1378d0) {
-                //     printf("the page is writting to a new space: address is 0x%lx\n", new_chunk_addr);
-                //     for (int i = 0; i < cPage.size(); i++) {
-                //         if (i % 8 == 0) {
-                //             printf("\n");
-                //         }
-                //         printf("%lx ", cPage[i]);
-                //     }
-                // }
 
                 if (isAddressCovered(evicted_phy_addr, 4096, 1)) {
                     printf("the page is compressible\n");
@@ -2890,334 +2557,6 @@ MemCtrl::addToReadQueueForDyL(PacketPtr pkt,
     // return false;
 }
 
-bool
-MemCtrl::addToReadQueueForNew(PacketPtr pkt,
-                unsigned int pkt_count, MemInterface* mem_intr) {
-    assert(!pkt->isWrite());
-    assert(pkt_count != 0);
-    // if the request size is larger than burst size, the pkt is split into
-    // multiple packets
-    // Note if the pkt starting address is not aligened to burst size, the
-    // address of first packet is kept unaliged. Subsequent packets
-    // are aligned to burst size boundaries. This is to ensure we accurately
-    // check read packets against packets in write queue.
-    const Addr base_addr = pkt->getAddr();
-    Addr addr = base_addr;
-
-    unsigned pktsServicedByWrQ = 0;
-
-    BurstHelper* burst_helper = NULL;
-
-    uint32_t burst_size = mem_intr->bytesPerBurst();
-    /* right now limit the burst size to be 64 */
-    assert(burst_size == 64);
-
-    /* prepare the auxiliary information */
-
-    std::vector<uint8_t> metaData = pkt->newMetaData;
-
-    if (pkt->newPType == 0x4) {
-        /* read sub pkt */
-        assert(pkt_count == 1);
-
-        unsigned size = std::min((addr | (burst_size - 1)) + 1,
-                        base_addr + pkt->getSize()) - addr;
-        stats.readPktSize[ceilLog2(size)]++;
-
-        /* New: use the metadata to do the translation */
-        PPN ospa_addr = pkt->new_origin;
-        PPN ppn = (ospa_addr >> 12 & ((1ULL << 52) - 1));
-        uint8_t cacheLineIdx = (ospa_addr >> 6) & 0x3F;
-
-        // First check write buffer to see if the data is already at
-        // the controller
-        bool foundInWrQ = false;
-        Addr burst_addr = burstAlign(addr, mem_intr);
-
-        // if the burst address is not present then there is no need
-        // looking any further
-        if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
-            for (const auto& vec : writeQueue) {
-                for (const auto& p : vec) {
-                    // check if the read is subsumed in the write queue
-                    // packet we are looking at
-                    if (p->addr <= addr &&
-                        ((addr + size) <= (p->addr + p->size))) {
-
-                        foundInWrQ = true;
-                        stats.servicedByWrQ++;
-                        pktsServicedByWrQ++;
-                        DPRINTF(MemCtrl,
-                                "Read to addr %#x with size %d serviced by "
-                                "write queue\n",
-                                addr, size);
-                        stats.bytesReadWrQ += burst_size;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // If not found in the write q, make a memory packet and
-        // push it onto the read queue
-        if (!foundInWrQ) {
-            // Make the burst helper for split packets
-            if (pkt_count > 1 && burst_helper == NULL) {
-                DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
-                        "memory requests\n", pkt->getAddr(), pkt_count);
-                burst_helper = new BurstHelper(pkt_count);
-            }
-            MemPacket* mem_pkt;
-            mem_pkt = mem_intr->decodePacket(pkt, addr, size, true,
-                                                    mem_intr->pseudoChannel);
-
-            // Increment read entries of the rank (dram)
-            // Increment count to trigger issue of non-deterministic read (nvm)
-            mem_intr->setupRank(mem_pkt->rank, true);
-            // Default readyTime to Max; will be reset once read is issued
-            mem_pkt->readyTime = MaxTick;
-            mem_pkt->burstHelper = burst_helper;
-
-            // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
-
-            DPRINTF(MemCtrl, "Adding to read queue\n");
-
-            readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
-            // log packet
-            logRequest(MemCtrl::READ, pkt->requestorId(),
-                    pkt->qosValue(), mem_pkt->addr, 1);
-
-            mem_intr->readQueueSize++;
-
-            // Update stats
-            stats.avgRdQLen = totalReadQueueSize + respQueue.size();
-        }
-
-    } else if (pkt->newPType == 0x8) {
-        /* read Twice */
-        assert(pkt_count == 1);
-
-        unsigned size = std::min((addr | (burst_size - 1)) + 1,
-                        base_addr + pkt->getSize()) - addr;
-        stats.readPktSize[ceilLog2(size)]++;
-
-        /* New: use the metadata to do the translation */
-        PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-        uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
-
-        // First check write buffer to see if the data is already at
-        // the controller
-        bool foundInWrQ = false;
-        Addr burst_addr = burstAlign(addr, mem_intr);
-
-        // if the burst address is not present then there is no need
-        // looking any further
-        if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
-            for (const auto& vec : writeQueue) {
-                for (const auto& p : vec) {
-                    // check if the read is subsumed in the write queue
-                    // packet we are looking at
-                    if (p->addr <= addr &&
-                        ((addr + size) <= (p->addr + p->size))) {
-
-                        foundInWrQ = true;
-                        stats.servicedByWrQ++;
-                        pktsServicedByWrQ++;
-                        DPRINTF(MemCtrl,
-                                "Read to addr %#x with size %d serviced by "
-                                "write queue\n",
-                                addr, size);
-                        stats.bytesReadWrQ += burst_size;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // If not found in the write q, make a memory packet and
-        // push it onto the read queue
-        if (!foundInWrQ) {
-            // Make the burst helper for split packets
-            if (pkt_count > 1 && burst_helper == NULL) {
-                DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
-                        "memory requests\n", pkt->getAddr(), pkt_count);
-                burst_helper = new BurstHelper(pkt_count);
-            }
-            MemPacket* mem_pkt;
-            mem_pkt = mem_intr->decodePacket(pkt, addr, size, true,
-                                                    mem_intr->pseudoChannel);
-
-            // Increment read entries of the rank (dram)
-            // Increment count to trigger issue of non-deterministic read (nvm)
-            mem_intr->setupRank(mem_pkt->rank, true);
-            // Default readyTime to Max; will be reset once read is issued
-            mem_pkt->readyTime = MaxTick;
-            mem_pkt->burstHelper = burst_helper;
-
-            // stats.rdQLenPdf[totalReadQueueSize + respQueue.size()]++;
-
-            DPRINTF(MemCtrl, "Adding to read queue\n");
-
-            readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
-            // log packet
-            logRequest(MemCtrl::READ, pkt->requestorId(),
-                    pkt->qosValue(), mem_pkt->addr, 1);
-
-            mem_intr->readQueueSize++;
-
-            // Update stats
-            stats.avgRdQLen = totalReadQueueSize + respQueue.size();
-        }
-    } else if (pkt->newPType == 0x10) {
-        // readMetaData
-        assert(pkt_count == 1);
-        unsigned size = pkt->getSize();
-
-        bool foundInWrQ = false;
-        Addr burst_addr = burstAlign(addr, mem_intr);
-
-        assert(burst_addr == addr);
-        assert(size == burst_size);
-        // if the burst address is not present then there is no need
-        // looking any further
-        if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
-            for (const auto& vec : writeQueue) {
-                for (const auto& p : vec) {
-                    // check if the read is subsumed in the write queue
-                    // packet we are looking at
-                    if (p->addr <= addr &&
-                       ((addr + size) <= (p->addr + p->size))) {
-                        foundInWrQ = true;
-                        pktsServicedByWrQ++;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // If not found in the write q, make a memory packet and
-        // push it onto the read queue
-        if (!foundInWrQ) {
-            MemPacket* mem_pkt;
-            mem_pkt = mem_intr->decodePacket(pkt, addr, size, true,
-                                                    mem_intr->pseudoChannel);
-            // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
-            // Increment read entries of the rank (dram)
-            // Increment count to trigger issue of non-deterministic read (nvm)
-            mem_intr->setupRank(mem_pkt->rank, true);
-            // Default readyTime to Max; will be reset once read is issued
-            mem_pkt->readyTime = MaxTick;
-            mem_pkt->burstHelper = burst_helper;
-
-            DPRINTF(MemCtrl, "Adding to read queue\n");
-
-            readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
-            // log packet
-            logRequest(MemCtrl::READ, pkt->requestorId(),
-                       pkt->qosValue(), mem_pkt->addr, 1);
-
-            mem_intr->readQueueSize++;
-
-            return false;
-        } else {
-            // printf("Line %d, ener the access and respond for compr\n", __LINE__);
-            accessAndRespondForNew(pkt, frontendLatency, mem_intr);
-            return true;
-        }
-
-    } else if (pkt->newPType == 0x20) {
-        /* readPage */
-        panic("this type of pkt should never be assigned to the queue");
-    } else if (pkt->newPType == 0x80) {
-        /* readBlock */
-        for (int cnt = 0; cnt < pkt_count; ++cnt) {
-            unsigned size = std::min((addr | (burst_size - 1)) + 1,
-                            base_addr + pkt->getSize()) - addr;
-
-            // First check write buffer to see if the data is already at
-            // the controller
-            bool foundInWrQ = false;
-            Addr burst_addr = burstAlign(addr, mem_intr);
-            // if the burst address is not present then there is no need
-            // looking any further
-            if (isInWriteQueue.find(burst_addr) != isInWriteQueue.end()) {
-                for (const auto& vec : writeQueue) {
-                    for (const auto& p : vec) {
-                        // check if the read is subsumed in the write queue
-                        // packet we are looking at
-                        if (p->addr <= addr &&
-                            ((addr + size) <= (p->addr + p->size))) {
-
-                            foundInWrQ = true;
-                            pktsServicedByWrQ++;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // If not found in the write q, make a memory packet and
-            // push it onto the read queue
-            if (!foundInWrQ) {
-
-                // Make the burst helper for split packets
-                if (pkt_count > 1 && burst_helper == NULL) {
-                    DPRINTF(MemCtrl, "Read to addr %#x translates to %d "
-                            "memory requests\n", pkt->getAddr(), pkt_count);
-                    burst_helper = new BurstHelper(pkt_count);
-                }
-
-                MemPacket* mem_pkt;
-                mem_pkt = mem_intr->decodePacket(pkt, addr, size, true,
-                                                        mem_intr->pseudoChannel);
-                // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
-                // Increment read entries of the rank (dram)
-                // Increment count to trigger issue of non-deterministic read (nvm)
-                mem_intr->setupRank(mem_pkt->rank, true);
-                // Default readyTime to Max; will be reset once read is issued
-                mem_pkt->readyTime = MaxTick;
-                mem_pkt->burstHelper = burst_helper;
-
-                DPRINTF(MemCtrl, "Adding to read queue\n");
-
-                readQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-
-                // log packet
-                logRequest(MemCtrl::READ, pkt->requestorId(),
-                        pkt->qosValue(), mem_pkt->addr, 1);
-
-                mem_intr->readQueueSize++;
-            }
-
-            // Starting address of next memory pkt (aligned to burst boundary)
-            addr = (addr | (burst_size - 1)) + 1;
-        }
-
-    } else {
-        panic("wrong type");
-    }
-
-    // If all packets are serviced by write queue, we send the repsonse back
-    if (pktsServicedByWrQ == pkt_count) {
-        DPRINTF(MemCtrl, "Line %d, next enter the access and respond function\n", __LINE__);
-        accessAndRespondForNew(pkt, frontendLatency, mem_intr);
-        return true;
-    }
-
-    // Update how many split packets are serviced by write queue
-    if (burst_helper != NULL) {
-        burst_helper->burstsServiced = pktsServicedByWrQ;
-        burst_helper->burstCount = pkt_count;
-    }
-
-    // not all/any packets serviced by the write queue
-    return false;
-
-}
-
 
 void
 MemCtrl::addToWriteQueue(PacketPtr pkt, unsigned int pkt_count,
@@ -3375,9 +2714,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
                 /* update the metadata if necessary */
                 uint8_t type = getType(metaData, cacheLineIdx);
-                // for (unsigned int j = 0; j < sizeMap[type]; j++) {
-                //     cacheLine[j] = pageBuffer[64 * cacheLineIdx + j];
-                // }
                 mem_intr->atomicRead(cacheLine.data(), pageBufferAddr + 64 * cacheLineIdx, 64);
 
                 restoreData(cacheLine, type);
@@ -3395,19 +2731,15 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 /*write back to pageBuffer and update the metadata if necessary */
                 if (isAllZero(cacheLine)) {
                     /* set the metadata entry to be 0 */
-                    DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                     setType(metaData, cacheLineIdx, 0);
                 } else {
                     if (compressed.size() <= 8) {
                         /* set the metadata entry to be 0b1*/
-                        DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                         setType(metaData, cacheLineIdx, 0b01);
                     } else if (compressed.size() <= 32) {
-                        DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                         setType(metaData, cacheLineIdx, 0b10);
                     } else {
                         /* set to be 0b11 */
-                        DPRINTF(MemCtrl, "Line %d, enter the setType\n", __LINE__);
                         setType(metaData, cacheLineIdx, 0b11);
                     }
                 }
@@ -3429,18 +2761,16 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                         mem_intr->atomicRead(cacheLine.data(), real_addr, sizeMap[type]);
                     }
                 }
-                // printf("2: get real size\n");
                 real_size = sizeMap[type];
-                // printf("2: restore data\n");
                 restoreData(cacheLine, type);
 
                 if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
                     printf("the restored(original) cacheline value is :\n");
                     for (int qw = 0; qw < 8; qw++) {
-                    for (int er = 0; er < 8; er++) {
-                        printf("%02x ", cacheLine[qw* 8 + er]);
-                    }
-                    printf("\n");
+                        for (int er = 0; er < 8; er++) {
+                            printf("%02x ", cacheLine[qw* 8 + er]);
+                        }
+                        printf("\n");
                     }
                     printf("\n");
                 }
@@ -3450,62 +2780,9 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 uint8_t loc = addr & 0x3F;
                 size_t writeSize = std::min(64UL - loc, pkt->getSize() - ofs);
 
-                // printf("the pkt data is :\n");
-                // uint8_t* test_start = pkt->getPtr<uint8_t>();
-                // for (int zx = 0; zx < pkt->getSize(); zx++) {
-                //     if (zx % 8 == 0) {
-                //         printf("\n");
-                //     }
-                //     printf("%02x ", test_start[zx]);
-
-                // }
-
-
-                // printf("the backup data is :\n");
-                // test_start = pkt->comprBackup->getPtr<uint8_t>();
-                // for (int zx = 0; zx < pkt->comprBackup->getSize(); zx++) {
-                //     if (zx % 8 == 0) {
-                //         printf("\n");
-                //     }
-                //     printf("%02x ", test_start[zx]);
-                // }
-
-                // printf("2: write data \n");
-                // fflush(stdout);
                 pkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
 
-                // if (pkt->getAddr() == 0xe74d8) {
-                //     printf("the updated cacheline value is :\n");
-                //     for (int qw = 0; qw < 8; qw++) {
-                //        for (int er = 0; er < 8; er++) {
-                //            printf("%02x ", cacheLine[qw* 8 + er]);
-                //        }
-                //        printf("\n");
-                //     }
-                //     printf("\n");
-                // }
-
-
-                // printf("the updated cacheline value is :\n");
-                // for (int qw = 0; qw < 8; qw++) {
-                //    for (int er = 0; er < 8; er++) {
-                //        printf("%02x ", cacheLine[qw* 8 + er]);
-                //    }
-                //    printf("\n");
-                // }
-                // printf("\n");
-
-                // printf("2: start to compress\n");
-                // fflush(stdout);
                 std::vector<uint8_t> compressed = compressForCompr(cacheLine);
-                // printf("after compress, the updated cacheline value is :\n");
-                // for (int qw = 0; qw < compressed.size(); qw++) {
-                //     if (qw % 8 == 0) {
-                //         printf("\n");
-                //     }
-                //     printf("%02x ", cacheLine[qw]);
-                // }
-                // printf("\n");
 
                 if (compressed.size() > 32) {
                     assert(compressed.size() == 64);
@@ -3515,13 +2792,12 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 if (inInflate) {
                     /* check if we could write back */
                     if (compressed.size() <= sizeMap[old_type]) {
-                        DPRINTF(MemCtrl, "underflow, write back to the oirginal space\n");
                         /* TODO: this may also cost some time, right now just make it atomic */
                         real_addr = moveForwardAtomic(metaData, cacheLineIdx, mem_intr, isAddressCovered(pkt->getAddr(), pkt->getSize(), 1));
                         real_size = sizeMap[old_type];
                         updatedMetaData.insert(ppn);
                         if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-                            printf("underflow\n");
+                            printf("underflow, write back to the oirginal space\n");
                         }
                     } else {
                         /* do nothing */
@@ -3531,35 +2807,15 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                         /* if not overflow */
                         /* do nothing */
                     } else {
-                        DPRINTF(MemCtrl, "Line %d: the cacheline overflow \n", __LINE__);
                         if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-                            printf("cacheline overflow\n");
+                            printf("Line %d: cacheline overflow\n", __LINE__);
                         }
-                        // printf("the pageNum is %d\n", ppn);
-                        // printf("the metadata is :\n");\
-                        // for (int k = 0; k < 64; k++) {
-                        //     printf("%02x",static_cast<unsigned>(metaData[k]));
-
-                        // }
-                        // printf("\n");
 
                         if (hasFreeInflateRoom(metaData)) {
                             Addr inflatedAddr = allocateInflateRoom(metaData, cacheLineIdx);
-                            // printf("now the new metadata is :\n");\
-                            // for (int k = 0; k < 64; k++) {
-                            //     printf("%02x",static_cast<unsigned>(metaData[k]));
-                            // }
-                            // printf("\n");
                             real_addr = inflatedAddr;
                             real_size = 64;
                             updatedMetaData.insert(ppn);
-
-                            // printf("the new metadata is :\n");
-                            // for (int k = 0; k < 64; k++) {
-                            //     printf("%02x",static_cast<unsigned>(metaData[k]));
-
-                            // }
-                            // printf("\n");
                         } else {
                             /* deal with page overflow */
                             if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
@@ -3612,13 +2868,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             for (const auto& ppn: updatedMetaData) {
                 DPRINTF(MemCtrl, "Line %d, enter the update subseqMetadata\n", __LINE__);
                 updateSubseqMetaData(pkt, ppn);
-                // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, ppn * 64);
                 mcache.add(ppn * 64, metaDataMap[ppn]);
-                // if (ppn != pageNum) {
-                //     mem_intr->atomicWrite(metaDataMap[ppn], ppn * 64, 64, 0);
-                // } else {
-                //     mPageBuffer = metaDataMap[ppn];
-                // }
                 mem_intr->atomicWrite(metaDataMap[ppn], ppn * 64, 64, 0);
             }
 
@@ -3631,7 +2881,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                 Addr metadata_addr = ppn * 64;
                 std::vector<uint8_t> metaData = pkt->comprMetaDataMap[ppn];
 
-                // printf("Line %d: the mcache add: pageNum is %d, addr is 0x%lx\n", __LINE__, ppn, metadata_addr);
                 mcache.add(metadata_addr, metaData);
                 //TODO2 create a write metadata to add to WriteQueue
                 mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
@@ -3654,7 +2903,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                             /* the compressed cacheline cross the boundary */
                             assert(endAddrAligned - addrAligned == burst_size);
                             stats.writeBursts += 2;
-                            // printf("pkt->requestorId is %d\n", pkt->requestorId());
                             stats.requestorWriteAccesses[pkt->requestorId()] += 2;
 
                             unsigned prefix = (real_addr | (burst_size - 1)) + 1 - real_addr;
@@ -3674,17 +2922,12 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                     MemPacket* mem_pkt;
                                     mem_pkt = mem_intr->decodePacket(pkt, memPktAddr[j], memPktLen[j], false,
                                                                             mem_intr->pseudoChannel);
-                                    // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
                                     // Default readyTime to Max if nvm interface;
                                     //will be reset once read is issued
                                     mem_pkt->readyTime = MaxTick;
 
                                     mem_intr->setupRank(mem_pkt->rank, false);
 
-                                    // stats.wrQLenPdf[totalWriteQueueSize]++;
-
-                                    // DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-                                    // printf("**********************Line %d: push back write queue, address is %lx\n", __LINE__, mem_pkt->pkt->comprBackup);
                                     writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
                                     isInWriteQueue.insert(burstAlign(addr, mem_intr));
 
@@ -3693,8 +2936,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                             pkt->qosValue(), mem_pkt->addr, 1);
 
                                     mem_intr->writeQueueSize++;
-
-                                    // assert(totalWriteQueueSize == isInWriteQueue.size());
 
                                     // Update stats
                                     stats.avgWrQLen = totalWriteQueueSize;
@@ -3711,7 +2952,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
                         } else {
                             stats.writeBursts++;
-                            // printf("pkt->requestorId is %d\n", pkt->requestorId());
                             stats.requestorWriteAccesses[pkt->requestorId()]++;
                             // see if we can merge with an existing item in the write
                             // queue and keep track of whether we have merged or not
@@ -3724,19 +2964,14 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                 MemPacket* mem_pkt;
                                 mem_pkt = mem_intr->decodePacket(pkt, real_addr, real_size, false,
                                                                         mem_intr->pseudoChannel);
-                                // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
                                 // Default readyTime to Max if nvm interface;
                                 //will be reset once read is issued
                                 mem_pkt->readyTime = MaxTick;
 
                                 mem_intr->setupRank(mem_pkt->rank, false);
 
-                                // printf("totalWriteQueuesize %lld, writeBufferSize %lld\n", totalWriteQueueSize, writeBufferSize);
-                                // stats.wrQLenPdf[totalWriteQueueSize]++;
-
                                 DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
 
-                                // printf("**********************Line %d: push back write queue, address is %lx\n", __LINE__, mem_pkt->pkt->comprBackup);
                                 writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
                                 isInWriteQueue.insert(burstAlign(addr, mem_intr));
 
@@ -3745,8 +2980,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                         pkt->qosValue(), mem_pkt->addr, 1);
 
                                 mem_intr->writeQueueSize++;
-
-                                // assert(totalWriteQueueSize == isInWriteQueue.size());
 
                                 // Update stats
                                 stats.avgWrQLen = totalWriteQueueSize;
@@ -3768,15 +3001,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
             assert(new_size % 64 == 0);
 
-            // printf("the changed newdata is :\n");
-            // for (int qw = 0; qw < newData.size(); qw++) {
-            //     if (qw % 8 == 0) {
-            //         printf("\n");
-            //     }
-            //     printf("%02x ", newData[qw]);
-            // }
-            // printf("\n");
-
             pkt->setAddr(addrAligned);
             pkt->setSizeForMC(new_size);
             pkt->allocateForMC();
@@ -3791,8 +3015,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
         unsigned size = std::min((addr | (burst_size - 1)) + 1,
                             base_addr + pkt->getSize()) - addr;
         assert(size == 64);
-
-
         // see if we can merge with an existing item in the write
         // queue and keep track of whether we have merged or not
         bool merged = isInWriteQueue.find(burstAlign(addr, mem_intr)) !=
@@ -3805,7 +3027,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
 
             mem_pkt = mem_intr->decodePacket(pkt, addr, size, false,
                                                     mem_intr->pseudoChannel);
-            // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
             // Default readyTime to Max if nvm interface;
             //will be reset once read is issued
             mem_pkt->readyTime = MaxTick;
@@ -3813,7 +3034,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             mem_intr->setupRank(mem_pkt->rank, false);
 
             DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-            // printf("**********************Line %d: push back write queue, address is %lx\n", __LINE__, mem_pkt->pkt->comprBackup);
             writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
             isInWriteQueue.insert(burstAlign(addr, mem_intr));
 
@@ -3822,8 +3042,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                        pkt->qosValue(), mem_pkt->addr, 1);
 
             mem_intr->writeQueueSize++;
-
-            // assert(totalWriteQueueSize == isInWriteQueue.size());
 
         } else {
             DPRINTF(MemCtrl,
@@ -3837,11 +3055,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
     } else if (pkt->getPType() == 0x20){
         /* pkt is writeForCompress */
         assert(isEligible(pkt));
-        // printf("the pkt is 0x%lx\n", reinterpret_cast<unsigned long>(pkt));
-        fflush(stdout);
-
         assert(blockedForCompr);
-
         assert((pkt->getAddr() & 0xFFF) == 0);
         assert(pkt->getSize() == 4096);
         assert(pkt_count == 64);
@@ -3867,17 +3081,13 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
             assert(inInflate == false);
 
             if (real_size > 0) {
-                DPRINTF(MemCtrl, "real_addr: %lx\n", real_addr);
-
-                /* now we have the real_addr, real_size, want to add the pkt to the write queue */
+                /* now we have the real_addr, real_size, want to add pkt to the write queue */
                 Addr addrAligned = burstAlign(real_addr, mem_intr);
                 Addr end_addr = real_addr + real_size - 1;
 
-                DPRINTF(MemCtrl, "end_addr: %lx\n", end_addr);
                 Addr endAddrAligned = burstAlign(end_addr, mem_intr);
 
                 if (addrAligned != endAddrAligned) {
-                    DPRINTF(MemCtrl, "endAddrAligned is %lx, addrAligned is %lx\n", endAddrAligned, addrAligned);
                     /* the compressed cacheline cross the boundary */
                     assert(endAddrAligned - addrAligned == burst_size);
 
@@ -3905,7 +3115,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                             mem_intr->setupRank(mem_pkt->rank, false);
 
                             DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-                            // printf("**********************Line %d: push back write queue, address is %lx\n", __LINE__, mem_pkt->pkt->comprBackup);
                             writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
                             isInWriteQueue.insert(burstAlign(addr, mem_intr));
 
@@ -3914,8 +3123,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                     pkt->qosValue(), mem_pkt->addr, 1);
 
                             mem_intr->writeQueueSize++;
-
-                            // assert(totalWriteQueueSize == isInWriteQueue.size());
 
                         } else {
                             DPRINTF(MemCtrl,
@@ -3945,7 +3152,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                         mem_intr->setupRank(mem_pkt->rank, false);
 
                         DPRINTF(MemCtrl, "Line %d: Adding to write queue\n", __LINE__);
-                        // printf("**********************Line %d: push back write queue, address is %lx\n", __LINE__, mem_pkt->pkt->comprBackup);
                         writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
                         isInWriteQueue.insert(burstAlign(addr, mem_intr));
 
@@ -3954,8 +3160,6 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
                                 pkt->qosValue(), mem_pkt->addr, 1);
 
                         mem_intr->writeQueueSize++;
-
-                        // assert(totalWriteQueueSize == isInWriteQueue.size());
 
                     } else {
                         DPRINTF(MemCtrl,
@@ -3978,10 +3182,7 @@ MemCtrl::addToWriteQueueForCompr(PacketPtr pkt, unsigned int pkt_count,
     // snoop the write queue for any upcoming reads
     // @todo, if a pkt size is larger than burst size, we might need a
     // different front end latency
-    // printf("Line %d, ener the access and respond for compr\n", __LINE__);
-    DPRINTF(MemCtrl, "Line %d, next enter the access and respond function\n", __LINE__);
     accessAndRespondForCompr(pkt, frontendLatency, mem_intr);
-    DPRINTF(MemCtrl, "Line %d, finish access and respond\n", __LINE__);
     return true;
 }
 
@@ -4039,6 +3240,10 @@ MemCtrl::addSubPktToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count, MemI
                        pkt->qosValue(), mem_pkt->addr, 1);
 
             mem_intr->writeQueueSize++;
+
+            if (pkt->DyLPType != 0x2) {
+               ++dylectWriteBurstsAwaitingIssue[pkt];
+            }
 
             if (updateStats) {
                 expectWriteQueueSize++;
@@ -4359,140 +3564,6 @@ MemCtrl::addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
     // accessAndRespondForDyL(pkt, frontendLatency, mem_intr);
 }
 
-
-bool
-MemCtrl::addToWriteQueueForNew(PacketPtr pkt, unsigned int pkt_count,
-                                MemInterface* mem_intr) {
-    assert(pkt->isWrite());
-
-    // if the request size is larger than burst size, the pkt is split into
-    // multiple packets
-    const Addr base_addr = pkt->getAddr();
-    Addr addr = base_addr;
-    uint32_t burst_size = mem_intr->bytesPerBurst();
-    assert(burst_size == 64);
-
-    /* prepare the auxiliary information */
-
-    std::vector<uint8_t> metaData = pkt->newMetaData;
-    // assert(metaData.size() == 64);
-    // printf("metaData.data 0x%lx\n", metaData.data());
-
-    Addr addrAligned = burstAlign(base_addr, mem_intr);
-
-    uint64_t new_size = ((((base_addr + pkt->getSize()) + (burst_size - 1)) >> 6) << 6) - addrAligned;
-
-    if (pkt->newPType == 0x4) {
-        /* write sub-pkt*/
-        Addr origin_addr = pkt->new_origin;
-        uint8_t cacheLineIdx = (origin_addr >> 6) & 0x3F;
-        uint8_t type = new_getType(metaData, cacheLineIdx);
-
-        if (type >= 0b100) {
-            /* the real data is in the overflow region */
-
-            assert(pkt->getSize() == 64);
-            uint8_t overflowIdx = 0;
-
-            mem_intr->atomicRead(&overflowIdx, addr, 1);
-
-            Addr real_addr = calOverflowAddr(metaData, overflowIdx);
-
-            if (isAddressCovered(pkt->new_backup->getAddr(), pkt->new_backup->getSize(), 1)) {
-                printf("the data is in the overflow region\n");
-                printf("the mpa addr is 0x%lx\n", addr);
-                printf("overflowIdx is %d\n", overflowIdx);
-                printf("the real addr is 0x%lx\n", real_addr);
-            }
-
-            // first issue write command to the addr in the data region
-            issueWriteCmdForNew(pkt, addr, 1, mem_intr);
-
-            // second issue write command to real_addr
-            assert(real_addr % 64 == 0);
-            issueWriteCmdForNew(pkt, real_addr, 64, mem_intr);
-            pkt->setAddr(real_addr); // set the real address
-
-        } else {
-            /* the data is in the original space */
-            Addr addr_aligned = burstAlign(addr, mem_intr);
-            assert(burst_size == 64);
-            uint64_t curSize = (addr_aligned + burst_size) - addr;
-            if(sizeMap[type] <= curSize) {
-                assert(pkt->suffixLen == 0);
-                // first issue write command to origin_addr
-                issueWriteCmdForNew(pkt, origin_addr, 1, mem_intr);
-
-                // second issue write command to zeroAddr
-                issueWriteCmdForNew(pkt, zeroAddr, 1, mem_intr);
-            } else {
-                // the cacheline is across the boundary
-                // first issue write command to origin_addr
-                issueWriteCmdForNew(pkt, origin_addr, 1, mem_intr);
-                // second issue write commad to origin_addr + burst_size
-                Addr new_addr = origin_addr + burst_size;
-                if (pkt->suffixLen != 0) {
-                    new_addr = pkt->newBlockAddr;
-                }
-                issueWriteCmdForNew(pkt, new_addr, sizeMap[type] - curSize, mem_intr);
-            }
-        }
-    } else if (pkt->newPType == 0x40) {
-        for (int cnt = 0; cnt < pkt_count; ++cnt) {
-            unsigned size = std::min((addr | (burst_size - 1)) + 1,
-                            base_addr + pkt->getSize()) - addr;
-
-            // see if we can merge with an existing item in the write
-            // queue and keep track of whether we have merged or not
-            bool merged = isInWriteQueue.find(burstAlign(addr, mem_intr)) !=
-                isInWriteQueue.end();
-
-            // if the item was not merged we need to create a new write
-            // and enqueue it
-            if (!merged) {
-                MemPacket* mem_pkt;
-
-                mem_pkt = mem_intr->decodePacket(pkt, addr, size, false,
-                                                        mem_intr->pseudoChannel);
-                // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
-                // Default readyTime to Max if nvm interface;
-                //will be reset once read is issued
-                mem_pkt->readyTime = MaxTick;
-
-                mem_intr->setupRank(mem_pkt->rank, false);
-
-                DPRINTF(MemCtrl, "Adding to write queue\n");
-
-                writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-                isInWriteQueue.insert(burstAlign(addr, mem_intr));
-
-                // log packet
-                logRequest(MemCtrl::WRITE, pkt->requestorId(),
-                        pkt->qosValue(), mem_pkt->addr, 1);
-
-                mem_intr->writeQueueSize++;
-
-            } else {
-                DPRINTF(MemCtrl,
-                        "Merging write burst with existing queue entry\n");
-            }
-
-            // Starting address of next memory pkt (aligned to burst_size boundary)
-            addr = (addr | (burst_size - 1)) + 1;
-        }
-
-    } else {
-        panic("wrong type");
-    }
-    // we do not wait for the writes to be send to the actual memory,
-    // but instead take responsibility for the consistency here and
-    // snoop the write queue for any upcoming reads
-    // @todo, if a pkt size is larger than burst size, we might need a
-    // different front end latency
-    accessAndRespondForNew(pkt, frontendLatency, mem_intr);
-    return true;
-}
-
 void
 MemCtrl::printQs() const
 {
@@ -4558,9 +3629,6 @@ MemCtrl::recvTimingReq(PacketPtr pkt)
                     // pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
         // printf("*************************\n");
         // printf("is blocked: %d\n", blockedForDyL);
-    } else if (operationMode == "new") {
-        isAccepted = recvTimingReqLogicForNew(pkt);
-        // printf("isAccepted %d\n", isAccepted);
     } else if (operationMode == "secure") {
         isAccepted = recvTimingReqLogicForSecure(pkt);
     }
@@ -4793,9 +3861,6 @@ MemCtrl::recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked){
     PacketPtr auxPkt = new Packet(pkt, curTick());
     auxPkt->allocateForMC();
     memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-    DPRINTF(MemCtrl, "(pkt) Line %d, the aux pkt %lx for the request %s\n", __LINE__, auxPkt, pkt->cmdString());
-    DPRINTF(MemCtrl, "the auxPkt is %s\n", auxPkt->cmdString());
 
     if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
         // printf("\n\n***********************************\n\n");
@@ -6569,141 +5634,6 @@ MemCtrl::afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr)
     }
 }
 
-bool
-MemCtrl::recvTimingReqLogicForNew(PacketPtr pkt, bool hasBlocked) {
-
-    if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
-        // printf("\n\n***********************************\n\n");
-        // printf("ENTER THE recvTimingReqLogicForNew: request %s addr %#x size %d\n",
-        //     pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
-        // fflush(stdout);
-    }
-
-    if (pkt->cmd == MemCmd::SwapReq) {
-        assert((pkt->getAddr() & 0x3F) + pkt->getSize() <= 64);
-    }
-
-    if (!hasBlocked) {
-        if (prevArrival != 0) {
-            stats.totGap += curTick() - prevArrival;
-        }
-        prevArrival = curTick();
-    } else {
-        assert(!blockedForNew);
-    }
-
-    recvLastPkt = curTick();
-
-    panic_if(!(dram->getAddrRange().contains(pkt->getAddr())),
-             "Can't handle address range for packet %s\n", pkt->print());
-
-    // Find out how many memory packets a pkt translates to
-    // If the burst size is equal or larger than the pkt size, then a pkt
-    // translates to only one memory packet. Otherwise, a pkt translates to
-    // multiple memory packets
-    unsigned size = pkt->getSize();
-    uint32_t burst_size = dram->bytesPerBurst();
-
-    unsigned offset = pkt->getAddr() & (burst_size - 1);
-    unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-    if ((curTick() - lastRecomprTick > recomprInterval) || blockedForNew) {
-        assert(!hasBlocked);
-        if (blockedNum + pkt_count <= std::min(writeBufferSizeForNew, readBufferSizeForNew)) {
-            blockedNum += pkt_count;
-            waitQueueForNew.emplace_back(std::make_pair(pkt, 1));
-            if (pkt->isWrite()) {
-                inProcessWritePkt.emplace_back(pkt);
-            }
-            if (!blockedForNew) {
-                blockedForNew = true;
-                // printf("pkt In Process is %d\n", pktInProcess);
-                if (pktInProcess == 0) {
-                    // start the recompression procedure
-                    readForRecompress(pkt, dram);
-                }
-            }
-            return true;
-        } else {
-            if(pkt->isWrite()) {
-                retryWrReq = true;
-            } else {
-                assert(pkt->isRead());
-                retryRdReq = true;
-            }
-            return false;
-        }
-    }
-
-    // run the QoS scheduler and assign a QoS priority value to the packet
-    qosSchedule( { &readQueue, &writeQueue }, burst_size, pkt);
-
-    // check local buffers and do not accept if full
-    if (pkt->isWrite()) {
-        assert(size != 0);
-        if (curWriteNum + pkt_count > writeBufferSizeForNew) {
-            assert(!hasBlocked);
-            DPRINTF(MemCtrl, "Write queue full, not accepting\n");
-            // remember that we have to retry this port
-            printf("write queue full, not accepting, curWriteNum %d, pkt_count %d, writeBufferSizeForNew %d\n", curWriteNum, pkt_count, writeBufferSizeForNew);
-            retryWrReq = true;
-            stats.numWrRetry++;
-            return false;
-        } else {
-            stats.writeReqs++;
-            stats.bytesWrittenSys += size;
-            curWriteNum += pkt_count;
-        }
-    } else {
-        assert(pkt->isRead());
-        assert(size != 0);
-        if (curReadNum + pkt_count > readBufferSizeForNew) {
-            DPRINTF(MemCtrl, "Read queue full, not accepting\n");
-            printf("read queue full, not accepting, curReadNum %d, pkt_count %d, readBufferSizeForNew %d\n", curReadNum, pkt_count, readBufferSizeForNew);
-            assert(!hasBlocked);
-            // remember that we have to retry this port
-            retryRdReq = true;
-            stats.numRdRetry++;
-            return false;
-        } else {
-            stats.readReqs++;
-            stats.bytesReadSys += size;
-            curReadNum += pkt_count;
-        }
-    }
-
-    /* initial an auxiliary pkt for next steps */
-    pktInProcess++;
-    PacketPtr aux_pkt = new Packet(pkt);
-    aux_pkt->new_subPktCnt = pkt_count;
-    aux_pkt->allocateForMC();
-    memcpy(aux_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-    if (pkt->isWrite()) {
-        if (std::find(inProcessWritePkt.begin(), inProcessWritePkt.end(), pkt) != inProcessWritePkt.end()) {
-            inProcessWritePkt.remove(pkt);
-        }
-        inProcessWritePkt.emplace_back(aux_pkt);
-    }
-
-    if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
-        printf("\n\n***********************************\n\n");
-        printf("marker accept TimingReq: request %s addr %#x size %d\n",
-            pkt->cmdString().c_str(), pkt->getAddr(), pkt->getSize());
-        printf("%lx\n", aux_pkt);
-        fflush(stdout);
-    }
-
-    assert(burst_size == 64);
-    for (int cnt = 0; cnt < pkt_count; cnt++) {
-        PacketPtr sub_pkt = new Packet(aux_pkt);
-        sub_pkt->configAsSubPkt(aux_pkt, cnt);
-        prepareMetaDataForNew(sub_pkt, dram);
-    }
-
-    return true;
-}
-
 void
 MemCtrl::processRespondEvent(MemInterface* mem_intr,
                         MemPacketQueue& queue,
@@ -6739,9 +5669,6 @@ MemCtrl::processRespondEvent(MemInterface* mem_intr,
             } else if (operationMode == "DyLeCT") {
                 accessAndRespondForDyL(mem_pkt->pkt, frontendLatency + backendLatency,
                                 mem_intr);
-            } else if (operationMode == "new") {
-                accessAndRespondForNew(mem_pkt->pkt, frontendLatency + backendLatency,
-                                mem_intr);
             } else if (operationMode == "secure") {
                 accessAndRespondForSecure(mem_pkt->pkt, frontendLatency + backendLatency,
                                 mem_intr);
@@ -6763,9 +5690,6 @@ MemCtrl::processRespondEvent(MemInterface* mem_intr,
                             mem_intr);
         } else if (operationMode == "DyLeCT") {
             accessAndRespondForDyL(mem_pkt->pkt, frontendLatency + backendLatency,
-                            mem_intr);
-        } else if (operationMode == "new") {
-            accessAndRespondForNew(mem_pkt->pkt, frontendLatency + backendLatency,
                             mem_intr);
         } else if (operationMode == "secure") {
             accessAndRespondForSecure(mem_pkt->pkt, frontendLatency + backendLatency,
@@ -6940,7 +5864,6 @@ MemCtrl::accessAndRespondForCompr(PacketPtr pkt, Tick static_latency,
     uint32_t burst_size = mem_intr->bytesPerBurst();
     uint32_t pType = pkt->getPType();
     assert(pType != 1);
-    // printf("pType is %d\n", pType);
     if (pType == 0x2) {
         /* auxPkt */
         assert(pkt->comprBackup);
@@ -7503,11 +6426,21 @@ MemCtrl::updateMetaDataForDyL(uint64_t ppn, Addr page_dram_addr, uint8_t page_le
 
 void
 MemCtrl::tryDeletePktForDyL(PacketPtr pkt) {
+    if (dylectWriteBurstsAwaitingIssue.count(pkt) != 0) {
+        return;
+    }
+
     assert(pkt->ref_cnt >= 1);
     if (pkt->ref_cnt == 1) {
         if (pkt->DyLPType != 0x2 && pkt->DyLCandidate) {
-            assert(pkt->DyLCandidate->ref_cnt > 1);
-            pkt->DyLCandidate->ref_cnt--;
+            // The final candidate reference is owned by the original
+            // auxiliary request (and may still be present in
+            // inProcessPkts). Deferred internal writes do not necessarily
+            // own an additional reference when their last timing burst is
+            // issued, so never consume this base reference here.
+            if (pkt->DyLCandidate->ref_cnt > 1) {
+                pkt->DyLCandidate->ref_cnt--;
+            }
         }
         delete pkt;
     }
@@ -7793,7 +6726,11 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             stat_used_bytes -= 2048;
         }
     
-        assert(dPage.size() == 4096);
+        panic_if(dPage.size() != 4096,
+            "DyLeCT compressed payload is corrupt: ppn=%llu addr=%#llx "
+            "size=%u. The CTE points to data that is not a 4KB zlib page.",
+            static_cast<unsigned long long>(aux_pkt->DyLBackup >> 12),
+            static_cast<unsigned long long>(page_addr), cpage_size);
         assert(freeList.size() > 0);
 
         /* mimic the latency of decompress operations */
@@ -7986,9 +6923,6 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
             return;
         }
 
-        freeList.emplace_back(pkt->getAddr());
-        stat_used_bytes -= 4096;
-
         Addr newAddr = 0;
         if (cSize <= 256) {
             if (smallFreeList.size() > 0) {
@@ -8027,18 +6961,15 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         }
 
         /* the page is now in level 2 */
-        // printf("compress cold page: %ld\n", coldPagePPN);
-        // printf("new addr is 0x%llx\n", newAddr);
-        // printf("cSize is %d\n", cSize);
-        clearML0TrackingForDyL(coldPagePPN);
-        unregisterUncompressedPageForDyL(coldPagePPN);
-        updateMetaDataForDyL(coldPagePPN, newAddr, 2, mem_intr, cSize);
-
         /* create a writeColdPage and add to queue */
         PacketPtr writeColdPage = new Packet(aux_pkt);
         aux_pkt->ref_cnt++;
 
-        writeColdPage->configAsWriteColdPage(newAddr, cPage);
+        // Do not publish the compressed CTE or recycle the source page yet.
+        // A request can otherwise observe the new CTE and read this target
+        // before the queued compressed-data write has reached memory.
+        writeColdPage->configAsWriteColdPage(newAddr, cPage, coldPagePPN,
+                                            pkt->getAddr());
 
         tryDeletePktForDyL(pkt);
 
@@ -8061,10 +6992,39 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
         memcpy(cPage.data(), pkt->getPtr<uint8_t>(), pkt->getSize());
         mem_intr->atomicWrite(cPage, pkt->getAddr(), pkt->getSize());
 
+        std::vector<uint8_t> committedPage(pkt->getSize());
+        mem_intr->atomicRead(committedPage.data(), pkt->getAddr(),
+                            committedPage.size());
+        panic_if(committedPage != cPage,
+                "DyLeCT compressed-page write did not persist: ppn=%llu "
+                "addr=%#llx size=%u",
+                static_cast<unsigned long long>(pkt->compressPageId),
+                static_cast<unsigned long long>(pkt->getAddr()),
+                pkt->getSize());
+
+        // Make the compressed representation visible only after its data is
+        // durable.  This keeps CTE and payload updates atomic from the point
+        // of view of subsequent DyLeCT translations.
+        const PPN coldPagePPN = pkt->compressPageId;
+        const Addr oldAddr = pkt->DyLBackup;
+        panic_if(pkt->getSize() == 0 || pkt->getSize() > 2048,
+                 "DyLeCT invalid compressed-page size %u for ppn %llu",
+                 pkt->getSize(),
+                 static_cast<unsigned long long>(coldPagePPN));
+        updateMetaDataForDyL(coldPagePPN, pkt->getAddr(), 2, mem_intr,
+                             pkt->getSize());
+        clearML0TrackingForDyL(coldPagePPN);
+        unregisterUncompressedPageForDyL(coldPagePPN);
+        freeList.emplace_back(oldAddr);
+        panic_if(stat_used_bytes < 4096,
+                 "DyLeCT memory accounting underflow while compressing ppn %llu",
+                 static_cast<unsigned long long>(coldPagePPN));
+        stat_used_bytes -= 4096;
+
         compressColdPageInProcess = false;
         /* TODO(lcf), maybe here also call the compressColdPage function */
-        printf("set the compressColdPageInProcess to false\n");
-        tryRecyclePkt(pkt);
+        // printf("set the compressColdPageInProcess to false\n");
+        tryDeletePktForDyL(pkt);
 
     } else if (packet_type == 0x40) {
         /* readCTE */
@@ -8732,294 +7692,6 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
     // }
 
     // return;
-}
-
-void
-MemCtrl::accessAndRespondForNew(PacketPtr pkt, Tick static_latency,
-                                                MemInterface* mem_intr) {
-    uint32_t burst_size = mem_intr->bytesPerBurst();
-
-    if (pkt->newPType == 0x02) {
-        /* aux pkt */
-        assert(pkt->new_backup);
-        PacketPtr real_recv_pkt = pkt->new_backup;
-
-        bool needsResponse = real_recv_pkt->needsResponse();
-
-        panic_if(!mem_intr->getAddrRange().contains(real_recv_pkt->getAddr()),
-                 "Can't handle address range for packet %s\n", real_recv_pkt->print());
-
-        unsigned size = real_recv_pkt->getSize();
-        unsigned offset = real_recv_pkt->getAddr() & (burst_size - 1);
-        unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-        if (pkt->isWrite()) {
-            curWriteNum -= pkt_count;
-            assert(std::find(inProcessWritePkt.begin(), inProcessWritePkt.end(), pkt) != inProcessWritePkt.end());
-            inProcessWritePkt.remove(pkt);
-        } else {
-            assert(pkt->isRead());
-            assert(real_recv_pkt->getSize() == pkt->getSize());
-            curReadNum -= pkt_count;
-            memcpy(real_recv_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), real_recv_pkt->getSize());
-        }
-
-        mem_intr->accessForNew(pkt, 0);
-
-        // turn packet around to go back to requestor if response expected
-        if (needsResponse) {
-            // access already turned the packet into a response
-            assert(real_recv_pkt->isResponse());
-            // response_time consumes the static latency and is charged also
-            // with headerDelay that takes into account the delay provided by
-            // the xbar and also the payloadDelay that takes into account the
-            // number of data beats.
-            Tick response_time = curTick() + static_latency + real_recv_pkt->headerDelay +
-                                 real_recv_pkt->payloadDelay;
-            // Here we reset the timing of the packet before sending it out.
-            real_recv_pkt->headerDelay = real_recv_pkt->payloadDelay = 0;
-
-            // queue the packet in the response queue to be sent out after
-            // the static latency has passed
-            port.schedTimingResp(real_recv_pkt, response_time);
-        } else {
-            // @todo the packet is going to be deleted, and the MemPacket
-            // is still having a pointer to it
-            pendingDelete.reset(real_recv_pkt);
-        }
-
-	    delete pkt;
-        pktInProcess--;
-        if (pktInProcess == 0) {
-            if (blockedForNew) {
-                assert(waitQueueForNew.size() > 0);
-                readForRecompress(waitQueueForNew.front().first, mem_intr);
-            }
-        }
-    } else if (pkt->newPType == 0x04) {
-        /* sub pkt */
-        PacketPtr aux_pkt = pkt->new_backup;
-
-        Addr origin_addr = pkt->new_origin;  /* the origin address in OSPA space */
-
-        mem_intr->accessForNew(pkt, 1);
-
-        if (pkt->isRead()) {
-            std::vector<uint8_t> metaData = pkt->newMetaData;
-            uint8_t cacheLineIdx = (origin_addr >> 6) & 0x3F;
-            uint8_t type = new_getType(metaData, cacheLineIdx);
-
-            Addr new_addr = 0;
-            uint8_t coverage = new_getCoverage(metaData);
-            if (coverage <= cacheLineIdx) {
-                assert(type == 0);
-                assert(pkt->suffixLen == 0);
-                new_addr = zeroAddr;
-            } else {
-                if (type >= 0b100) {
-                    assert(pkt->suffixLen == 0);
-                    uint8_t overflowIdx = *(pkt->getPtr<uint8_t>());
-                    new_addr = calOverflowAddr(metaData, overflowIdx);
-                } else {
-                    new_addr = burstAlign(pkt->getAddr(), mem_intr) + burst_size;
-                    if (pkt->suffixLen != 0) {
-                        new_addr = pkt->newBlockAddr;
-                    }
-                }
-
-            }
-            Addr start_addr = (type >= 0b100)?(new_addr):(pkt->getAddr());
-            PacketPtr readTwice = new Packet(pkt);
-            readTwice->configAsReadTwice(pkt, new_addr, start_addr);
-
-            if (!addToReadQueueForNew(readTwice, 1, dram)) {
-                // If we are not already scheduled to get a request out of the
-                // queue, do so now
-                if (!nextReqEvent.scheduled()) {
-                    DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                    schedule(nextReqEvent, curTick());
-                }
-            }
-
-        } else {
-            assert(pkt->isWrite());
-            aux_pkt->new_subPktCnt--;
-            if (aux_pkt->new_subPktCnt == 0) {
-                accessAndRespondForNew(aux_pkt, static_latency, mem_intr);
-            }
-            delete pkt;
-        }
-
-    } else if (pkt->newPType == 0x08) {
-        /* read Twice */
-        PacketPtr sub_pkt = pkt->new_backup;
-        PacketPtr aux_pkt = sub_pkt->new_backup;
-
-        assert(sub_pkt->isRead());
-
-        pkt->setAddr(pkt->new_origin);
-
-        mem_intr->accessForNew(pkt, 1);
-
-        if (isAddressCovered(aux_pkt->getAddr(), aux_pkt->getSize(), 1)) {
-            printf("the mpa address is 0x%lx\n", pkt->new_origin);
-            printf("the readed size is %d\n", pkt->getSize());
-        }
-
-        Addr origin_addr = sub_pkt->new_origin;
-
-        std::vector<uint8_t> cacheLine(64, 0);
-        uint8_t cacheLineIdx = (origin_addr >> 6) & 0x3F;
-        uint8_t type = new_getType(sub_pkt->newMetaData, cacheLineIdx);
-
-        memcpy(cacheLine.data(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-        if (isAddressCovered(aux_pkt->getAddr(), aux_pkt->getSize(), 1)) {
-            printf("before restore , the data is\n");
-            for (int i = 0; i < pkt->getSize(); i++) {
-                if (i % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-            }
-            printf("\n");
-        }
-
-        new_restoreData(cacheLine, type);
-
-        if (isAddressCovered(aux_pkt->getAddr(), aux_pkt->getSize(), 1)) {
-            printf("the original address of sub-pkt is 0x%lx\n", origin_addr);
-            printf("ppn is %d, the metadata is:\n", (origin_addr >> 12));
-            for (int k = 0; k < 64; k++) {
-                printf("%02x",static_cast<unsigned>(sub_pkt->newMetaData[k]));
-            }
-            printf("\n");
-            printf("the readed cacheline is:");
-
-            for (int i = 0; i < cacheLine.size(); i++) {
-                if (i % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-            }
-            printf("\n");
-        }
-
-        uint64_t cur_loc = origin_addr & 0x3F;
-        uint64_t cur_size = std::min(64UL - cur_loc, aux_pkt->getAddr() + aux_pkt->getSize() - origin_addr);
-
-        assert(aux_pkt->getAddr() <= origin_addr);
-
-        uint64_t offset = origin_addr - aux_pkt->getAddr();
-        if (offset != 0) {
-            assert(cur_loc == 0);
-        }
-        memcpy(aux_pkt->getPtr<uint8_t>() + offset, cacheLine.data() + cur_loc, cur_size);
-
-        aux_pkt->new_subPktCnt--;
-        if (aux_pkt->new_subPktCnt == 0) {
-            accessAndRespondForNew(aux_pkt, static_latency, mem_intr);
-        }
-        delete pkt;
-        delete sub_pkt;
-
-    } else if (pkt->newPType == 0x10) {
-        /* readMetaData */
-        PacketPtr sub_pkt = pkt->new_backup;
-
-        assert(pkt->getSize() == 64);
-        std::vector<uint8_t> metaData(64, 0);
-
-        mem_intr->atomicRead(metaData.data(), pkt->getAddr(), 64);
-
-        if (!isValidMetaData(metaData)) {
-            metaData = originMetaData;
-            new_allocateBlock(metaData, 1);
-        }
-
-        sub_pkt->newMetaData = metaData;
-
-        /* update metadata when necessary */
-        updateMetaDataForNew(sub_pkt, mem_intr);
-
-        metaData = sub_pkt->newMetaData;
-
-        mem_intr->atomicWrite(metaData, pkt->getAddr(), 64);
-        mcache.add(pkt->getAddr(), metaData);
-
-        assignToQueueForNew(sub_pkt);
-        delete pkt;
-
-    } else if (pkt->newPType == 0x20) {
-        // readPage
-
-        PPN target_page = pkt->new_targetPage;
-        // printf("[FOR TEST] finish read the compressed page: ppn %d\n", target_page);
-        Addr memory_addr = target_page * 64;
-
-        std::vector<uint8_t> metaData(64, 0);
-        mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-
-        recompressForNew(pkt, metaData);
-
-        if (mcache.isExist(memory_addr)){
-            mcache.updateIfExist(memory_addr, metaData);
-        }
-        mem_intr->atomicWrite(metaData, memory_addr, 64);
-
-        blockedForNew = false;
-        lastRecomprTick = curTick();
-        blockedNum = 0;
-        for (auto const& elem: waitQueueForNew) {
-            uint8_t pkt_type = elem.second;
-            PacketPtr pkt = elem.first;
-            if (pkt_type == 1) {
-                recvTimingReqLogicForNew(pkt, true);
-            } else {
-                recvFunctionalLogicForNew(pkt, mem_intr, true);
-            }
-        }
-        waitQueueForNew.clear();
-
-    } else if (pkt->newPType == 0x40) {
-        // writeBlock
-        PacketPtr readPage = pkt->new_backup;
-
-        /* actually write the pkt */
-        std::vector<uint8_t> data(pkt->getSize(), 0);
-        memcpy(data.data(), pkt->getPtr<uint8_t>(), pkt->getSize());
-        assert(pkt->getSize() == 512 || pkt->getSize() == 1024);
-
-        // printf("[FOR TEST] write to the new block\n");
-        // printf("the new address is 0x%lx, the size is %ld\n", pkt->getAddr(), pkt->getSize());
-
-        mem_intr->atomicWrite(data, pkt->getAddr(), pkt->getSize());
-
-        assert(readPage->new_subPktCnt > 0);
-        readPage->new_subPktCnt--;
-        if (readPage->new_subPktCnt == 0) {
-            delete readPage;
-        }
-
-        delete pkt;
-    } else if (pkt->newPType == 0x80) {
-        // readBlock
-        PacketPtr readPage = pkt->new_backup;
-        uint32_t chunk_idx = pkt->pktIdx;
-        assert(pkt->getSize() == pageSizeMap[chunk_idx + 1] - pageSizeMap[chunk_idx]);
-
-        mem_intr->atomicRead(readPage->getPtr<uint8_t>() + pageSizeMap[chunk_idx], pkt->getAddr(), pkt->getSize());
-
-        assert(readPage->new_subPktCnt > 0);
-        readPage->new_subPktCnt--;
-        if (readPage->new_subPktCnt == 0) {
-            accessAndRespondForNew(readPage, static_latency, mem_intr);
-        }
-        delete pkt;
-    } else {
-        panic("wrong type");
-    }
-    return;
 }
 
 /*
@@ -10355,7 +9027,27 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
         // remove the request from the queue - the iterator is no longer valid
         writeQueue[mem_pkt->qosValue()].erase(to_write);
 
+        // Keep the Packet alive until its final MemPacket has been destroyed.
+        // Some memory-interface implementations retain packet-derived state
+        // while their queue entry is being torn down.
+        PacketPtr completed_dylect_write = nullptr;
+
+        if (operationMode == "DyLeCT") {
+            auto it = dylectWriteBurstsAwaitingIssue.find(mem_pkt->pkt);
+            if (it != dylectWriteBurstsAwaitingIssue.end()) {
+                assert(it->second > 0);
+                if (--it->second == 0) {
+                    completed_dylect_write = mem_pkt->pkt;
+                    dylectWriteBurstsAwaitingIssue.erase(it);
+                }
+            }
+        }
+
         delete mem_pkt;
+
+        if (completed_dylect_write) {
+            tryDeletePktForDyL(completed_dylect_write);
+        }
 
         // If we emptied the write queue, or got sufficiently below the
         // threshold (using the minWritesPerSwitch as the hysteresis) and
@@ -10839,8 +9531,6 @@ MemCtrl::recvFunctional(PacketPtr pkt)
         found = recvFunctionalLogicForCompr(pkt, dram);
     } else if (operationMode == "DyLeCT") {
         found = recvFunctionalLogicForDyL(pkt, dram);
-    } else if (operationMode == "new") {
-        found = recvFunctionalLogicForNew(pkt, dram);
     } else if (operationMode == "secure") {
         found = recvFunctionalLogicForSecure(pkt, dram);
     } else {
@@ -12112,569 +10802,6 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 }
 
 bool
-MemCtrl::recvFunctionalLogicForNew(PacketPtr pkt, MemInterface* mem_intr, bool hasBlocked) {
-    if (hasBlocked) {
-        assert(pkt->newPType == 0x100);
-        unsigned size = pkt->getSize();
-        uint32_t burst_size = mem_intr->bytesPerBurst();
-
-        unsigned offset = pkt->getAddr() & (burst_size - 1);
-        unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-        /* Step 1: atomic read metadata from memory or mcache */
-        Addr base_addr = pkt->getAddr();
-        Addr addr = base_addr;
-
-        for (unsigned int i = 0; i < pkt_count; i++) {
-            PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-            if (pkt->newfunctionMetaDataMap.find(ppn) == pkt->newfunctionMetaDataMap.end()) {
-                /* step 1.1: calculate the MPA for metadata */
-                Addr memory_addr = ppn * 64;
-                std::vector<uint8_t> metaData(64, 0);
-                if (mcache.isExist(memory_addr)) {
-                    metaData = mcache.find(memory_addr);
-                } else {
-                    mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-                }
-
-                if (!isValidMetaData(metaData)) {
-                    metaData = originMetaData;
-                    new_allocateBlock(metaData, 1);
-                }
-
-                pkt->newfunctionMetaDataMap[ppn] = metaData;
-            }
-            // Starting address of next memory pkt (aligned to burst boundary)
-            addr = (addr | (burst_size - 1)) + 1;
-        }
-
-        /* step 2: process the pkt based on isWrite or isRead */
-
-        if (pkt->isWrite()) {
-
-            Addr addrAligned = (base_addr >> 6) << 6;
-            uint64_t new_size = ((((base_addr + size) + (burst_size - 1)) >> 6) << 6) - addrAligned;
-
-            assert(burst_size == 64);
-            assert(new_size == (addr - addrAligned));
-            assert(new_size == pkt_count * burst_size);
-
-            if (pkt->cmd == MemCmd::SwapReq) {
-                panic("not support yet");
-            } else {
-                addr = base_addr;
-                std::vector<uint8_t> newData(new_size, 0);
-
-                /* process the pkt one by one */
-                for (unsigned int i = 0; i < pkt_count; i++) {
-                    PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-                    uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
-
-                    assert(pkt->newfunctionMetaDataMap.find(ppn) != pkt->newfunctionMetaDataMap.end());
-                    std::vector<uint8_t> metaData = pkt->newfunctionMetaDataMap[ppn];
-
-
-                    /* has to read the old cacheline (compressed form) from memory */
-                    std::vector<uint8_t> cacheLine(64, 0);
-
-                    uint8_t type = new_getType(metaData, cacheLineIdx);
-
-                    // printf("the type is %d\n", static_cast<unsigned int>(type));
-
-                    std::vector<uint64_t> translationRes(3, 0);
-
-                    translationRes[0] = zeroAddr;
-
-
-                    if(new_getCoverage(metaData) <= cacheLineIdx) {
-                        assert(type == 0);
-                    } else {
-                        translationRes = new_addressTranslation(metaData, cacheLineIdx);
-                    }
-
-                    if (type >= 0b100) {
-                        mem_intr->atomicRead(cacheLine.data(), translationRes[0], 1);
-                        uint8_t overflowIdx = cacheLine[0];
-                        Addr overflow_addr = calOverflowAddr(metaData, overflowIdx);
-                        mem_intr->atomicRead(cacheLine.data(), overflow_addr, 64);
-                    } else {
-                        assert(translationRes[2] < sizeMap[type]);
-                        if (translationRes[2] == 0) {
-                            mem_intr->atomicRead(cacheLine.data(), translationRes[0], sizeMap[type]);
-                        } else {
-                            uint64_t prefixLen = sizeMap[type] - translationRes[2];
-                            mem_intr->atomicRead(cacheLine.data(), translationRes[0], prefixLen);
-                            mem_intr->atomicRead(cacheLine.data() + prefixLen, translationRes[1], translationRes[2]);
-                        }
-
-                    }
-
-                    /* restore the data to its uncompressed form */
-                    new_restoreData(cacheLine, type);
-
-                    /* write the data */
-                    uint64_t ofs = addr - base_addr;
-                    uint8_t loc = addr & 0x3F;
-                    size_t writeSize = std::min(64UL - loc, size - ofs);
-                    // DPRINTF(MemCtrl, "(F) Line %d: start to write dat, the ofs is %lld, the loc is %d, the writeSize is %ld\n", __LINE__, ofs, static_cast<unsigned int>(loc), writeSize);
-                    pkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
-
-                    /* update the metadata according to the new value of cacheline */
-                    new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
-
-                    pkt->newfunctionMetaDataMap[ppn] = metaData;
-                    Addr metadata_addr = ppn * 64;
-                    mcache.add(metadata_addr, metaData);
-
-                    mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
-
-                    for (unsigned int j = 0; j < 64; j++) {
-                        newData[i * 64 + j] = cacheLine[j];
-                    }
-                    // Starting address of next memory pkt (aligned to burst boundary)
-                    addr = (addr | (burst_size - 1)) + 1;
-                }
-
-
-                assert(new_size % 64 == 0);
-                pkt->setAddr(addrAligned);
-                pkt->setSizeForMC(new_size);
-                pkt->allocateForMC();
-                pkt->setDataForMC(newData.data(), 0, new_size);
-                mem_intr->functionalAccessForNew(pkt, burst_size, zeroAddr, 2);
-            }
-            assert(std::find(inProcessWritePkt.begin(), inProcessWritePkt.end(), pkt) != inProcessWritePkt.end());
-            inProcessWritePkt.remove(pkt);
-
-        } else {
-            /* do nothing */
-        }
-        delete pkt;
-    } else {
-        DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
-            pkt->cmdString(), pkt->getAddr());
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)){
-            printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
-        }
-
-        if (blockedForNew) {
-            PacketPtr auxPkt = new Packet(pkt);
-            // copy the content
-            auxPkt->newPType = 0x100;
-            auxPkt->allocateForMC();
-            memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-            assert(!hasBlocked);
-            if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
-                waitQueueForNew.emplace_back(std::make_pair(auxPkt, 0));
-                unsigned size = pkt->getSize();
-                uint32_t burst_size = mem_intr->bytesPerBurst();
-
-                unsigned offset = pkt->getAddr() & (burst_size - 1);
-                unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-                /* Step 1: atomic read metadata from memory or mcache */
-                Addr base_addr = pkt->getAddr();
-                Addr addr = base_addr;
-
-                if (pkt->isRead()) {
-
-                    for (unsigned int i = 0; i < pkt_count; i++) {
-                        PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-                        if (pkt->newfunctionMetaDataMap.find(ppn) == pkt->newfunctionMetaDataMap.end()) {
-                            /* step 1.1: calculate the MPA for metadata */
-                            Addr memory_addr = ppn * 64;
-                            std::vector<uint8_t> metaData(64, 0);
-                            if (mcache.isExist(memory_addr)) {
-                                metaData = mcache.find(memory_addr);
-                            } else {
-                                mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-                            }
-
-                            if (!isValidMetaData(metaData)) {
-                                metaData = originMetaData;
-                                new_allocateBlock(metaData, 1);
-                            }
-
-                            pkt->newfunctionMetaDataMap[ppn] = metaData;
-                        }
-                        // Starting address of next memory pkt (aligned to burst boundary)
-                        addr = (addr | (burst_size - 1)) + 1;
-                    }
-
-                    /* step 2: process the pkt  */
-                    /* step 2.2: if the pkt is read, access the auxPkt directly */
-                    mem_intr->functionalAccessForNew(pkt, burst_size, zeroAddr, 1);
-
-                    /* check for if collision with current write */
-                    for (const auto& writePkt: inProcessWritePkt) {
-                        Addr writePktStart = writePkt->getAddr();
-                        Addr writePktEnd = writePktStart + writePkt->getSize();
-                        Addr pktStart = pkt->getAddr();
-                        Addr pktEnd = pktStart + pkt->getSize();
-                        if ((writePktStart < pktEnd) && (pktStart < writePktEnd)) {
-                            printf("Func. read collide with write\n");
-                            Addr overlap_start = std::max(writePktStart, pktStart);
-                            Addr overlap_end = std::min(writePktEnd, pktEnd);
-                            size_t overlap_len = overlap_end - overlap_start;
-                            size_t pkt_offset = overlap_start - pktStart;
-                            size_t write_pkt_offset = overlap_start - writePktStart;
-                            std::memcpy(
-                                pkt->getPtr<uint8_t>() + pkt_offset,
-                                writePkt->getPtr<uint8_t>() + write_pkt_offset,
-                                overlap_len
-                            );
-                        }
-                    }
-                } else {
-                    assert(pkt->isWrite());
-                    inProcessWritePkt.emplace_back(auxPkt);
-                    mem_intr->functionalAccessForNew(pkt, burst_size, zeroAddr, 1);
-                }
-                return true;
-            } else {
-                return false;
-            }
-        } else {
-            if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
-                /* Step 0: create an auxPkt for write */
-                PacketPtr aux_pkt = new Packet(pkt);
-                aux_pkt->allocateForMC();
-                memcpy(aux_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-                unsigned size = aux_pkt->getSize();
-                uint32_t burst_size = mem_intr->bytesPerBurst();
-
-                unsigned offset = aux_pkt->getAddr() & (burst_size - 1);
-                unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-                /* Step 1: atomic read metadata from memory or mcache */
-                Addr base_addr = aux_pkt->getAddr();
-                Addr addr = base_addr;
-
-                for (unsigned int i = 0; i < pkt_count; i++) {
-                    PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-                    if (aux_pkt->newfunctionMetaDataMap.find(ppn) == aux_pkt->newfunctionMetaDataMap.end()) {
-                        /* step 1.1: calculate the MPA for metadata */
-                        Addr memory_addr = ppn * 64;
-                        std::vector<uint8_t> metaData(64, 0);
-                        if (mcache.isExist(memory_addr)) {
-                            metaData = mcache.find(memory_addr);
-                        } else {
-                            mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-                        }
-
-                        if (!isValidMetaData(metaData)) {
-                            metaData = originMetaData;
-                            new_allocateBlock(metaData, 1);
-                        }
-
-                        aux_pkt->newfunctionMetaDataMap[ppn] = metaData;
-                    }
-                    // Starting address of next memory pkt (aligned to burst boundary)
-                    addr = (addr | (burst_size - 1)) + 1;
-                }
-
-                /* step 2: process the pkt based on isWrite or isRead */
-
-                if (pkt->isWrite()) {
-
-                    Addr addrAligned = (base_addr >> 6) << 6;
-                    uint64_t new_size = ((((base_addr + size) + (burst_size - 1)) >> 6) << 6) - addrAligned;
-
-                    assert(burst_size == 64);
-                    assert(new_size == (addr - addrAligned));
-                    assert(new_size == pkt_count * burst_size);
-
-                    if (pkt->cmd == MemCmd::SwapReq) {
-                        panic("not support yet");
-                    } else {
-                        addr = base_addr;
-                        std::vector<uint8_t> newData(new_size, 0);
-
-                        /* process the pkt one by one */
-                        for (unsigned int i = 0; i < pkt_count; i++) {
-                            PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-                            uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
-
-                            assert(aux_pkt->newfunctionMetaDataMap.find(ppn) != aux_pkt->newfunctionMetaDataMap.end());
-                            std::vector<uint8_t> metaData = aux_pkt->newfunctionMetaDataMap[ppn];
-
-
-                            /* has to read the old cacheline (compressed form) from memory */
-                            std::vector<uint8_t> cacheLine(64, 0);
-
-                            uint8_t type = new_getType(metaData, cacheLineIdx);
-
-                            // printf("the type is %d\n", static_cast<unsigned int>(type));
-
-                            std::vector<uint64_t> translationRes(3, 0);
-
-                            translationRes[0] = zeroAddr;
-
-
-                            if(new_getCoverage(metaData) <= cacheLineIdx) {
-                                assert(type == 0);
-                            } else {
-                                translationRes = new_addressTranslation(metaData, cacheLineIdx);
-                            }
-
-                            if (type >= 0b100) {
-                                mem_intr->atomicRead(cacheLine.data(), translationRes[0], 1);
-                                uint8_t overflowIdx = cacheLine[0];
-                                Addr overflow_addr = calOverflowAddr(metaData, overflowIdx);
-                                mem_intr->atomicRead(cacheLine.data(), overflow_addr, 64);
-                            } else {
-                                assert(translationRes[2] < sizeMap[type]);
-                                if (translationRes[2] == 0) {
-                                    mem_intr->atomicRead(cacheLine.data(), translationRes[0], sizeMap[type]);
-                                } else {
-                                    uint64_t prefixLen = sizeMap[type] - translationRes[2];
-                                    mem_intr->atomicRead(cacheLine.data(), translationRes[0], prefixLen);
-                                    mem_intr->atomicRead(cacheLine.data() + prefixLen, translationRes[1], translationRes[2]);
-                                }
-
-                            }
-
-                            /* restore the data to its uncompressed form */
-                            new_restoreData(cacheLine, type);
-
-                            /* write the data */
-                            uint64_t ofs = addr - base_addr;
-                            uint8_t loc = addr & 0x3F;
-                            size_t writeSize = std::min(64UL - loc, size - ofs);
-                            // DPRINTF(MemCtrl, "(F) Line %d: start to write dat, the ofs is %lld, the loc is %d, the writeSize is %ld\n", __LINE__, ofs, static_cast<unsigned int>(loc), writeSize);
-                            aux_pkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
-
-                            /* update the metadata according to the new value of cacheline */
-                            new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
-
-                            aux_pkt->newfunctionMetaDataMap[ppn] = metaData;
-                            Addr metadata_addr = ppn * 64;
-                            mcache.add(metadata_addr, metaData);
-
-                            mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
-
-                            for (unsigned int j = 0; j < 64; j++) {
-                                newData[i * 64 + j] = cacheLine[j];
-                            }
-                            // Starting address of next memory pkt (aligned to burst boundary)
-                            addr = (addr | (burst_size - 1)) + 1;
-                        }
-
-
-                        assert(new_size % 64 == 0);
-                        aux_pkt->setAddr(addrAligned);
-                        aux_pkt->setSizeForMC(new_size);
-                        aux_pkt->allocateForMC();
-                        aux_pkt->setDataForMC(newData.data(), 0, new_size);
-                    }
-
-                    mem_intr->functionalAccessForNew(aux_pkt, burst_size, zeroAddr, 0);
-                    delete aux_pkt;
-
-                } else {
-                    /* step 2.2: if the pkt is read, access the auxPkt directly */
-                    assert(pkt->isRead());
-                    mem_intr->functionalAccessForNew(aux_pkt, burst_size, zeroAddr, 0);
-                    assert(aux_pkt->getSize() == pkt->getSize());
-                    memcpy(pkt->getPtr<uint8_t>(), aux_pkt->getPtr<uint8_t>(), pkt->getSize());
-                    delete aux_pkt;
-                }
-                return true;
-            } else {
-                return false;
-            }
-        }
-    }
-
-    // PacketPtr auxPkt = pkt;
-
-    // if (!hasBlocked) {
-    //     DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
-    //         pkt->cmdString(), pkt->getAddr());
-    //     if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)){
-    //         printf("recv Functional: %s 0x%x\n", pkt->cmdString().c_str(), pkt->getAddr());
-    //     }
-    //     auxPkt = new Packet(pkt);
-    //     // copy the content
-    //     auxPkt->allocateForMC();
-    //     memcpy(auxPkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
-    // }
-
-    // if (blockedForNew) {
-    //     assert(!hasBlocked);
-    //     if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
-    //         waitQueueForNew.emplace_back(std::make_pair(auxPkt, 0));
-    //         return true;
-    //     } else {
-    //         return false;
-    //     }
-    // }
-
-    // // printf("\n\n========recv new pkt============\n\n");
-
-    // if (mem_intr->getAddrRange().contains(pkt->getAddr())) {
-    //     /* step 0: create an auxiliary packet for processing the pkt */
-    //     unsigned size = pkt->getSize();
-    //     uint32_t burst_size = mem_intr->bytesPerBurst();
-
-    //     unsigned offset = pkt->getAddr() & (burst_size - 1);
-    //     unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-    //     /* Step 1: atomic read metadata from memory or mcache */
-    //     Addr base_addr = pkt->getAddr();
-    //     Addr addr = base_addr;
-
-    //     for (unsigned int i = 0; i < pkt_count; i++) {
-    //         PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-    //         if (auxPkt->newfunctionMetaDataMap.find(ppn) == auxPkt->newfunctionMetaDataMap.end()) {
-    //             /* step 1.1: calculate the MPA for metadata */
-    //             Addr memory_addr = ppn * 64;
-    //             std::vector<uint8_t> metaData(64, 0);
-    //             if (mcache.isExist(memory_addr)) {
-    //                 metaData = mcache.find(memory_addr);
-    //             } else {
-    //                 mem_intr->atomicRead(metaData.data(), memory_addr, 64);
-    //             }
-
-    //             if (!isValidMetaData(metaData)) {
-    //                 metaData = originMetaData;
-    //                 new_allocateBlock(metaData, 1);
-    //             }
-
-    //             auxPkt->newfunctionMetaDataMap[ppn] = metaData;
-    //         }
-    //         // Starting address of next memory pkt (aligned to burst boundary)
-    //         addr = (addr | (burst_size - 1)) + 1;
-    //     }
-
-    //     /* step 2: process the pkt based on isWrite or isRead */
-
-    //     if (auxPkt->isWrite()) {
-    //         Addr addrAligned = (base_addr >> 6) << 6;
-    //         uint64_t new_size = ((((base_addr + size) + (burst_size - 1)) >> 6) << 6) - addrAligned;
-
-    //         assert(burst_size == 64);
-    //         assert(new_size == (addr - addrAligned));
-    //         assert(new_size == pkt_count * burst_size);
-
-    //         if (auxPkt->cmd == MemCmd::SwapReq) {
-    //             panic("not support yet");
-    //         } else {
-    //             addr = base_addr;
-    //             std::vector<uint8_t> newData(new_size, 0);
-
-    //             /* process the pkt one by one */
-    //             for (unsigned int i = 0; i < pkt_count; i++) {
-    //                 PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-    //                 uint8_t cacheLineIdx = (addr >> 6) & 0x3F;
-
-    //                 assert(auxPkt->newfunctionMetaDataMap.find(ppn) != auxPkt->newfunctionMetaDataMap.end());
-    //                 std::vector<uint8_t> metaData = auxPkt->newfunctionMetaDataMap[ppn];
-
-
-    //                 /* has to read the old cacheline (compressed form) from memory */
-    //                 std::vector<uint8_t> cacheLine(64, 0);
-
-    //                 uint8_t type = new_getType(metaData, cacheLineIdx);
-
-    //                 // printf("the type is %d\n", static_cast<unsigned int>(type));
-
-    //                 std::vector<uint64_t> translationRes(3, 0);
-
-    //                 translationRes[0] = zeroAddr;
-
-
-    //                 if(new_getCoverage(metaData) <= cacheLineIdx) {
-    //                     assert(type == 0);
-    //                 } else {
-    //                     translationRes = new_addressTranslation(metaData, cacheLineIdx);
-    //                 }
-
-    //                 if (type >= 0b100) {
-    //                     mem_intr->atomicRead(cacheLine.data(), translationRes[0], 1);
-    //                     uint8_t overflowIdx = cacheLine[0];
-    //                     Addr overflow_addr = calOverflowAddr(metaData, overflowIdx);
-    //                     mem_intr->atomicRead(cacheLine.data(), overflow_addr, 64);
-    //                 } else {
-    //                     assert(translationRes[2] < sizeMap[type]);
-    //                     if (translationRes[2] == 0) {
-    //                         mem_intr->atomicRead(cacheLine.data(), translationRes[0], sizeMap[type]);
-    //                     } else {
-    //                         uint64_t prefixLen = sizeMap[type] - translationRes[2];
-    //                         mem_intr->atomicRead(cacheLine.data(), translationRes[0], prefixLen);
-    //                         mem_intr->atomicRead(cacheLine.data() + prefixLen, translationRes[1], translationRes[2]);
-    //                     }
-
-    //                 }
-
-    //                 /* restore the data to its uncompressed form */
-    //                 new_restoreData(cacheLine, type);
-
-    //                 /* write the data */
-    //                 uint64_t ofs = addr - base_addr;
-    //                 uint8_t loc = addr & 0x3F;
-    //                 size_t writeSize = std::min(64UL - loc, size - ofs);
-    //                 // DPRINTF(MemCtrl, "(F) Line %d: start to write dat, the ofs is %lld, the loc is %d, the writeSize is %ld\n", __LINE__, ofs, static_cast<unsigned int>(loc), writeSize);
-    //                 auxPkt->writeDataForMC(cacheLine.data() + loc, ofs, writeSize);
-
-    //                 /* update the metadata according to the new value of cacheline */
-    //                 new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
-
-    //                 auxPkt->newfunctionMetaDataMap[ppn] = metaData;
-    //                 Addr metadata_addr = ppn * 64;
-    //                 mcache.add(metadata_addr, metaData);
-
-    //                 mem_intr->atomicWrite(metaData, metadata_addr, 64, 0);
-
-    //                 for (unsigned int j = 0; j < 64; j++) {
-    //                     newData[i * 64 + j] = cacheLine[j];
-    //                 }
-    //                 // Starting address of next memory pkt (aligned to burst boundary)
-    //                 addr = (addr | (burst_size - 1)) + 1;
-    //             }
-
-
-    //             assert(new_size % 64 == 0);
-    //             auxPkt->setAddr(addrAligned);
-    //             auxPkt->setSizeForMC(new_size);
-    //             auxPkt->allocateForMC();
-    //             auxPkt->setDataForMC(newData.data(), 0, new_size);
-
-    //             // if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-    //                 // printf("[Functional Write] the update data in auxPkt is:");
-    //                 // for (int i = 0; i < new_size; i++) {
-    //                 //     if (i % 8 == 0) {
-    //                 //         printf("\n");
-    //                 //     }
-    //                 //     printf("%02x ", static_cast<unsigned int>(*(auxPkt->getPtr<uint8_t>() + i)));
-    //                 // }
-    //                 // printf("\n");
-    //             // }
-    //         }
-
-    //     } else {
-    //         /* step 2.2: if the pkt is read, access the auxPkt directly */
-    //         assert(auxPkt->isRead());
-    //     }
-
-    //     mem_intr->functionalAccessForNew(auxPkt, burst_size, zeroAddr);
-    //     delete auxPkt;
-    //     return true;
-    // } else {
-    //     delete auxPkt;
-    //     return false;
-    // }
-}
-
-bool
 MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
         pkt->cmdString(), pkt->getAddr());
@@ -12980,43 +11107,6 @@ void MemCtrl::setType(std::vector<uint8_t>& metaData, const uint8_t& index, cons
     int loc = startPos / 8;
     int ofs = startPos % 8;
     metaData[loc] = (metaData[loc] & (~(0b11 << (6 - ofs)))) |  (type << (6 - ofs));
-}
-
-
-uint8_t MemCtrl::new_getType(const std::vector<uint8_t>& metaData, const uint8_t& index) {
-    uint8_t type = 0;
-
-    int startPos = 40 * 8 + index;
-    int loc = startPos / 8;
-    int ofs = startPos % 8;
-    uint8_t prec = 0b1 & (metaData[loc] >> (7 - ofs));
-    type = prec << 2;
-
-    startPos = 48 * 8 + index * 2;
-    loc = startPos / 8;
-    ofs = startPos % 8;
-    uint8_t succ = 0b11 & (metaData[loc] >> (6 - ofs));
-    type = type | succ;
-
-    return type;
-}
-
-void MemCtrl::new_setType(std::vector<uint8_t>& metaData, const uint8_t& index, const uint8_t& type) {
-    assert(type < 8);
-    uint8_t prec = (type >> 2) & 0b1;
-    uint8_t succ = type & 0b11;
-
-    /* 1. update the first part */
-    int startPos = 40 * 8 + index;
-    int loc = startPos / 8;
-    int ofs = startPos % 8;
-    metaData[loc] = (metaData[loc] & (~(0b1 << (7 - ofs)))) | (prec << (7 - ofs));
-
-    /* 2. update the successive part */
-    startPos = (48) * 8 + index * 2;
-    loc = startPos / 8;
-    ofs = startPos % 8;
-    metaData[loc] = (metaData[loc] & (~(0b11 << (6 - ofs)))) | (succ << (6 - ofs));
 }
 
 void MemCtrl::initialPageBuffer(const PPN& ppn) {
@@ -14281,10 +12371,7 @@ MemCtrl::prepareMetaData(PacketPtr pkt){
     for (unsigned int i = 0 ; i < pkt_count; i++) {
         PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
 
-        // printf("iterate the pkt, check if metadata for ppn is available %d\n", ppn);
-
         if (pkt->comprMetaDataMap.find(ppn) == pkt->comprMetaDataMap.end()) {
-            // printf("not found in metadata map\n");
             pageCnt++;
             /* step 1.1: calculate the MPA for metadata */
             Addr memory_addr = ppn * 64;
@@ -14300,17 +12387,9 @@ MemCtrl::prepareMetaData(PacketPtr pkt){
                 if (mcache.isExist(memory_addr)) {
                     /* hit in the metadata cache */
                     pkt->comprMetaDataMap[ppn] = mcache.find(memory_addr);
-                    // printf("the metadata is :\n");
-                    // for (int k = 0; k < 64; k++) {
-                    //     printf("%02x",static_cast<unsigned>(pkt->comprMetaDataMap[ppn][k]));
-
-                    // }
-                    // printf("\n");
-
                     entryCnt++;
                 } else {
                     // create a readMetaData pkt and add to read queue
-                    // printf("have to create a readMetaData \n");
                     PacketPtr readMetaData = new Packet(pkt);
                     pkt->ref_cnt++;
                     DPRINTF(MemCtrl, "(pkt) Line %d, the readMetaData pkt %lx\n", __LINE__, readMetaData);
@@ -14502,674 +12581,6 @@ MemCtrl::findSameElem(Addr addr) {
 
 /* ==== end for DyLeCT ==== */
 
-/* ==== start for new architecture ==== */
-
-uint8_t
-MemCtrl::new_getCoverage(const std::vector<uint8_t>& metaData) {
-    uint8_t cover = metaData[0] & 0x7F;
-    return cover;
-}
-
-
-/*
- * according to the index (1 - 9), allocate the free block and update the metaData
-*/
-void
-MemCtrl::new_allocateBlock(std::vector<uint8_t>& metaData, uint8_t index) {
-    assert(index >= 1 && index <= 9);
-    uint64_t block_size = pageSizeMap[index] - pageSizeMap[index - 1];
-    uint64_t block_id = 0;
-    if (block_size == 512) {
-        if (fineGrainedFreeList.size() == 0) {
-            Addr chunk_addr = freeList.front();
-            freeList.pop_front();
-            block_id = chunk_addr >> 9;
-            fineGrainedFreeList.push_back(chunk_addr + 512);
-        } else {
-            block_id = (fineGrainedFreeList.front() >> 9);
-            fineGrainedFreeList.pop_front();
-        }
-        stat_used_bytes += 512;
-        compress_used += 512;
-    } else if (block_size == 1024) {
-        block_id = (freeList.front() >> 9);
-        freeList.pop_front();
-        stat_used_bytes += 1024;
-        compress_used += 1024;
-    } else {
-        panic("invalid block size");
-    }
-
-    for (int m = 3; m >= 0; m--) {
-        metaData[4 * index + m] = block_id & 0xFF;
-        block_id >>= 8;
-    }
-}
-
-/*
-    Givem the metadata and the target cacheLineIdx, return a vector containing three elements
-    res[0]: the starting address of the original space allocated for this cacheline
-    res[1] (only valid for those cachelines that across two blocks): the starting address of the second part
-    res[2]: the size of the second part
-*/
-
-std::vector<uint64_t>
-MemCtrl::new_addressTranslation(const std::vector<uint8_t>& metaData, uint8_t cachelineIdx) {
-    // printf("address Translation, the metaData is: \n");
-    // for (int k = 0; k < 64; k++) {
-    //     printf("%02x",static_cast<unsigned>(metaData[k]));
-    // }
-    // printf("\n");
-    std::vector<uint64_t> res(3, 0);
-    assert(metaData.size() == 64);
-    assert(new_getCoverage(metaData) > cachelineIdx);
-
-    uint64_t startLoc = 0;
-
-    for (uint8_t u = 0; u < cachelineIdx; u++) {
-        uint8_t type = new_getType(metaData, u);
-        startLoc += sizeMap[(type & 0b11)];
-    }
-    assert(startLoc < pageSizeMap[9]);
-
-    Addr addr = 0;
-    auto it = std::upper_bound(pageSizeMap.begin(), pageSizeMap.end(), startLoc);
-    uint64_t chunkIdx = it - pageSizeMap.begin();
-    assert(chunkIdx >= 1);
-    // printf("chunkIdx is %d\n", chunkIdx);
-
-    for (int u = 0; u < 4; u++){   // 4B per MPFN
-        addr = (addr << 8) | (metaData[4 * chunkIdx + u]);
-    }
-
-    // printf("the aligned adddress is 0x%lx\n", addr);
-
-    uint64_t leftover = startLoc - pageSizeMap[chunkIdx - 1];
-
-    uint64_t chunkSize = pageSizeMap[chunkIdx] - pageSizeMap[chunkIdx - 1];
-    assert(leftover < chunkSize);
-    if (chunkSize == 512) {
-        addr = (addr << 9) | (leftover & 0x1FF);
-    } else {
-        assert(chunkSize == 1024);
-        addr = (addr << 9) | (leftover & 0x3FF);
-    }
-
-    res[0] = addr;
-    uint8_t cur_type = new_getType(metaData, cachelineIdx);
-    if (startLoc + sizeMap[cur_type & 0b11] > pageSizeMap[chunkIdx]) {
-        assert(chunkIdx < 9);
-        uint64_t suffixLen = startLoc + sizeMap[cur_type & 0b11] - pageSizeMap[chunkIdx];
-        Addr new_block_addr = 0;
-        for (int u = 0; u < 4; u++){   // 4B per MPFN
-            new_block_addr = (new_block_addr << 8) | (metaData[4 * chunkIdx + 4 + u]);
-        }
-        res[1] = new_block_addr << 9;
-        res[2] = suffixLen;
-    }
-
-    return res;
-}
-
-Addr
-MemCtrl::calOverflowAddr(const std::vector<uint8_t>& metaData, uint8_t overflowIdx) {
-    uint64_t offset = metaData[2] * 64 + overflowIdx * 64;
-    assert(offset < pageSizeMap[9]);
-    Addr addr = 0;
-    auto it = std::upper_bound(pageSizeMap.begin(), pageSizeMap.end(), offset);
-    uint64_t chunkIdx = it - pageSizeMap.begin();
-    assert(chunkIdx >= 1);
-
-    for (int u = 0; u < 4; u++){   // 4B per MPFN
-        assert((4 * chunkIdx + u) < 64);
-        addr = (addr << 8) | (metaData[4 * chunkIdx + u]);
-    }
-
-    uint64_t leftover = offset - pageSizeMap[chunkIdx - 1];
-    uint64_t chunkSize = pageSizeMap[chunkIdx] - pageSizeMap[chunkIdx - 1];
-    assert(leftover < chunkSize);
-    assert(offset + 64 <= pageSizeMap[chunkIdx]);
-    if (chunkSize == 512) {
-        addr = (addr << 9) | (leftover & 0x1FF);
-    } else {
-        assert(chunkSize == 1024);
-        addr = (addr << 9) | (leftover & 0x3FF);
-    }
-    return addr;
-}
-
-void
-MemCtrl::new_restoreData(std::vector<uint8_t>& cacheLine, uint8_t type) {
-    if (type >= 0b011) {
-        return;
-    } else if (type == 0b000) {
-        for (int i = 0; i < cacheLine.size(); i++) {
-            cacheLine[i] = 0;
-        }
-    } else {
-        decompressForNew(cacheLine);
-    }
-}
-
-void
-MemCtrl::decompressForNew(std::vector<uint8_t>& data) {
-    uint64_t base = 0;
-    for (int i = 0; i < 4; i++) {
-        base = (base << 8) | data[0];
-        data.erase(data.begin());
-    }
-
-    std::vector<uint16_t> interm = decompressC(data);
-    data = BDXRecover(base, interm);
-}
-
-std::vector<uint8_t>
-MemCtrl::compressForNew(const std::vector<uint8_t>& cacheLine) {
-    assert(cacheLine.size() == 64);
-    if (isAllZero(cacheLine)) {
-        std::vector<uint8_t> oneByte = {0};
-        return oneByte;
-    }
-    std::pair<uint64_t, std::vector<uint16_t>> transformed = BDXTransform(cacheLine);
-    uint64_t base = transformed.first;
-    std::vector<uint8_t> compressed = compressC(transformed.second);
-    for (int i = 0; i < 4; i++) {
-        uint8_t val = base & 0xFF;
-        base >>= 8;
-        compressed.insert(compressed.begin(),val);
-    }
-    if (compressed.size() > 44) {
-        return cacheLine;
-    }
-    return compressed;
-}
-
-void
-MemCtrl::new_updateMetaData(const std::vector<uint8_t>& cacheLine, std::vector<uint8_t>& metaData, uint8_t cacheLineIdx, MemInterface* mem_intr) {
-    assert(cacheLine.size() == 64);
-    /* compress the data */
-    std::vector<uint8_t> compressed_data = compressForNew(cacheLine);
-
-    /* get the so-far coverage of metadata */
-    uint8_t coverage = new_getCoverage(metaData);
-    uint8_t type = new_getType(metaData, cacheLineIdx);
-
-    if (cacheLineIdx >= coverage) {
-        /* if the coverage of metadata doesn't contain the current cacheline */
-        assert(type == 0);
-        if (isAllZero(cacheLine)) {
-            /* do nothing */
-        } else {
-            if (compressed_data.size() <= 22) {
-                new_setType(metaData, cacheLineIdx, 0b001);
-            } else if (compressed_data.size() <= 44) {
-                new_setType(metaData, cacheLineIdx, 0b010);
-            } else {
-                new_setType(metaData, cacheLineIdx, 0b011);
-            }
-        }
-        uint64_t sum_size = 0;
-        for (int i = 0; i <= cacheLineIdx; i++) {
-            sum_size += sizeMap[(new_getType(metaData, i) & 0b11)];
-        }
-
-        if (cacheLineIdx == 63) {
-            uint64_t startOverflowRegion = ((sum_size + 63) >> 6) << 6;
-            assert(startOverflowRegion >= sum_size);
-            metaData[2] = (startOverflowRegion / 64);
-        }
-
-        uint8_t block_num = metaData[1];
-        assert(block_num >= 1);
-
-        // printf("coverage not satisfy, the sum_size is %d\n", sum_size);
-
-        if (sum_size > pageSizeMap[block_num]) {
-            assert(block_num < 9);
-            assert(sum_size <= pageSizeMap[block_num + 1]);
-            new_allocateBlock(metaData, block_num + 1);
-            metaData[1] = block_num + 1;
-        }
-        /* update the coverage to the new boundary */
-        // printf("the old metaData[0] is %d\n", static_cast<unsigned int>(metaData[0]));
-        metaData[0] = 0x80 | ((cacheLineIdx + 1) & 0x7F);
-        // printf("the old metaData[0] is %d\n", static_cast<unsigned int>(metaData[0]));
-
-    } else {
-        if (type < 0b100 && compressed_data.size() > sizeMap[type]) {
-            /* overflow */
-            // printf("overflow, the cacheLineIdx is %d\n", static_cast<uint8_t>(cacheLineIdx));
-            // printf("coverage: %d\n", coverage);
-            if (coverage < 64) {
-                metaData[0] = 0xC0;
-
-                uint64_t sum_size = 0;
-                for (int i = 0; i < 64; i++) {
-                    uint8_t cur_type = new_getType(metaData, i);
-                    sum_size += sizeMap[(cur_type & 0b11)];
-                    // printf("index %d, size is %d, sum_size is %ld\n", i, static_cast<unsigned int>(sizeMap[type & 0b11]), sum_size);
-                }
-
-                uint64_t startOverflowRegion = ((sum_size + 63) >> 6) << 6;
-                assert(startOverflowRegion >= sum_size);
-                metaData[2] = (startOverflowRegion / 64);
-
-                assert(metaData[3] == 0);
-            }
-            uint8_t new_type = type | 0b100;
-
-            uint8_t overflow_num = metaData[3];
-            assert(overflow_num < 64);
-
-            new_setType(metaData, cacheLineIdx, new_type);
-
-            std::vector<uint64_t> translationRes = new_addressTranslation(metaData, cacheLineIdx);
-            std::vector<uint8_t> sign = {overflow_num};
-
-            // printf("write overflow num is %d, address is 0x%lx\n", static_cast<unsigned int>(sign[0]), translationRes[0]);
-            mem_intr->atomicWrite(sign, translationRes[0], 1);
-
-            overflow_num++;
-            metaData[3] = overflow_num;
-
-            uint8_t block_num = metaData[1];
-            assert(block_num >= 1);
-
-            uint64_t page_size = metaData[2] * 64 + overflow_num * 64;
-            // printf("the metaData[2] is %d\n", metaData[2]);
-            // printf("the overflow_num is %d\n", overflow_num);
-            // printf("pageSizeMap[block_num] is %ld\n", pageSizeMap[block_num]);
-            // fflush(stdout);
-
-
-            if (page_size > pageSizeMap[block_num]) {
-                assert(block_num < 9);
-                assert(page_size <= pageSizeMap[block_num + 1]);
-                new_allocateBlock(metaData, block_num + 1);
-                metaData[1] = block_num + 1;
-            }
-        }
-
-    }
-}
-
-void
-MemCtrl::prepareMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr) {
-    // printf("enter the prepareMetaDataForNew\n");
-
-    unsigned size = pkt->getSize();
-    uint32_t burst_size = dram->bytesPerBurst();
-
-    unsigned offset = pkt->getAddr() & (burst_size - 1);
-    unsigned int pkt_count = divCeil(offset + size, burst_size);
-
-    assert(pkt_count == 1);
-    assert(pkt->newPType == 0x4);   // pkt is subPkt
-
-    Addr addr = pkt->getAddr();
-
-    assert(addr == pkt->new_origin);
-
-    PPN ppn = (addr >> 12 & ((1ULL << 52) - 1));
-
-    /* step 1.1: calculate the MPA for metadata */
-    Addr memory_addr = ppn * 64;
-    std::vector<uint8_t> metaData(64, 0);
-
-    if (mcache.isExist(memory_addr)) {
-
-        pkt->newMetaData = mcache.find(memory_addr);
-
-        if (isAddressCovered(pkt->new_origin, pkt->getSize(), 1)) {
-            printf("hit in metadata cache, ppn %d\n", ppn);
-            printf("the metaData is :\n");
-            for (int k = 0; k < 64; k++) {
-                printf("%02x",static_cast<unsigned>(pkt->newMetaData[k]));
-            }
-            printf("\n");
-        }
-        /*
-            update the metadata when necessary, processing the sub-pkt so that
-            pkt->getAddr() return the mpa address,
-            the size also should be in alignment with the compressed form
-         */
-        updateMetaDataForNew(pkt, mem_intr);
-
-        /* update the metadata in mcache & memory */
-        std::vector<uint8_t> new_metaData = pkt->newMetaData;
-        mcache.add(memory_addr, new_metaData);
-        mem_intr->atomicWrite(new_metaData, memory_addr, 64);
-
-        assignToQueueForNew(pkt);
-    } else {
-        // create a readMetaData pkt and add to read queue
-        // printf("have to create a readMetaData \n");
-        PacketPtr readMetaData = new Packet(pkt);
-        DPRINTF(MemCtrl, "(pkt) Line %d, the readMetaData pkt %lx\n", __LINE__, readMetaData);
-
-        readMetaData->configAsReadMetaDataForNew(pkt, memory_addr);
-        if (!addToReadQueueForNew(readMetaData, 1, dram)) {
-            // If we are not already scheduled to get a request out of the
-            // queue, do so now
-            if (!nextReqEvent.scheduled()) {
-                DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                schedule(nextReqEvent, curTick());
-            }
-        }
-    }
-}
-
-void
-MemCtrl::assignToQueueForNew(PacketPtr pkt) {
-    unsigned size = pkt->getSize();
-    uint32_t burst_size = dram->bytesPerBurst();
-
-    unsigned offset = pkt->getAddr() & (burst_size - 1);
-    unsigned int pkt_count = divCeil(offset + size, burst_size);
-    if (pkt->newPType == 0x04) {
-        pkt_count = 1;
-    }
-
-    if (pkt->isWrite()) {
-        // not any more
-        // // the pkt is burst-size aligned
-        // assert(pkt->getSize() % 64 == 0);
-        // assert(pkt->getAddr() % 64 == 0);
-
-        /* now the pkt is burst-size aligned */
-        addToWriteQueueForNew(pkt, pkt_count, dram);
-        // If we are not already scheduled to get a request out of the
-        // queue, do so now
-        if (!nextReqEvent.scheduled()) {
-            DPRINTF(MemCtrl, "Request scheduled immediately\n");
-            schedule(nextReqEvent, curTick());
-        }
-    } else {
-        assert(pkt->isRead());
-        if (!addToReadQueueForNew(pkt, pkt_count, dram)) {
-            // If we are not already scheduled to get a request out of the
-            // queue, do so now
-            if (!nextReqEvent.scheduled()) {
-                DPRINTF(MemCtrl, "Request scheduled immediately\n");
-                schedule(nextReqEvent, curTick());
-            }
-        }
-    }
-}
-
-void
-MemCtrl::issueWriteCmdForNew(PacketPtr pkt, Addr addr, unsigned size, MemInterface* mem_intr, bool recordStat) {
-    if (recordStat) {
-        stats.writePktSize[ceilLog2(size)]++;
-        stats.writeBursts++;
-        stats.requestorWriteAccesses[pkt->requestorId()]++;
-    }
-
-    // see if we can merge with an existing item in the write
-    // queue and keep track of whether we have merged or not
-    bool merged = isInWriteQueue.find(burstAlign(addr, mem_intr)) !=
-        isInWriteQueue.end();
-
-    // if the item was not merged we need to create a new write
-    // and enqueue it
-    if (!merged) {
-        MemPacket* mem_pkt;
-
-        mem_pkt = mem_intr->decodePacket(pkt, addr, size, false,
-                                                mem_intr->pseudoChannel);
-        // printf("Line %d, the address of mem_pkt is 0x%lx\n", __LINE__, reinterpret_cast<unsigned long>(mem_pkt));
-        // Default readyTime to Max if nvm interface;
-        //will be reset once read is issued
-        mem_pkt->readyTime = MaxTick;
-
-        mem_intr->setupRank(mem_pkt->rank, false);
-
-        // assert(totalWriteQueueSize < writeBufferSize);
-        // stats.wrQLenPdf[totalWriteQueueSize]++;
-
-        DPRINTF(MemCtrl, "Adding to write queue\n");
-
-        writeQueue[mem_pkt->qosValue()].push_back(mem_pkt);
-        isInWriteQueue.insert(burstAlign(addr, mem_intr));
-
-        // log packet
-        logRequest(MemCtrl::WRITE, pkt->requestorId(),
-                    pkt->qosValue(), mem_pkt->addr, 1);
-
-        mem_intr->writeQueueSize++;
-
-        // assert(totalWriteQueueSize == isInWriteQueue.size());
-
-        if (recordStat) {
-            // Update stats
-            stats.avgWrQLen = totalWriteQueueSize;
-        }
-
-    } else {
-        DPRINTF(MemCtrl,
-                "Merging write burst with existing queue entry\n");
-
-        // keep track of the fact that this burst effectively
-        // disappeared as it was merged with an existing one
-        if (recordStat) {
-            stats.mergedWrBursts++;
-        }
-    }
-}
-
-void
-MemCtrl::updateMetaDataForNew(PacketPtr pkt, MemInterface* mem_intr) {
-
-    std::vector<uint8_t>& metaData = pkt->newMetaData;
-
-    /* the pkt may not be burst-size aligned
-       in that case, should make it aligned
-    */
-    /* read the data first */
-    Addr origin_addr = pkt->new_origin;    // the address in OSPA space
-    uint8_t cacheLineIdx = (origin_addr >> 6) & 0x3F;
-
-    uint8_t type = new_getType(metaData, cacheLineIdx);
-    std::vector<uint64_t> translationRes(3, 0);
-
-    translationRes[0] = zeroAddr;
-    uint8_t real_size = 64;
-
-    if (new_getCoverage(metaData) <= cacheLineIdx) {
-        assert(type == 0);
-    } else {
-        translationRes = new_addressTranslation(metaData, cacheLineIdx);
-    }
-
-    if (pkt->isWrite()) {
-        // printf("type is %d, translationRes[0] 0x%lx, translationRes[1] 0x%lx, translationRes[2] 0x%lx\n", static_cast<unsigned int>(type), translationRes[0], translationRes[1], translationRes[2]);
-        if (type >= 0b100) {
-            uint8_t overflowIdx = 0;
-            mem_intr->atomicRead(&overflowIdx, translationRes[0], 1);
-            translationRes[0] = calOverflowAddr(metaData, overflowIdx);
-        } else {
-            real_size = sizeMap[type];
-        }
-
-        if (isAddressCovered(origin_addr, pkt->getSize(),1)) {
-            printf("the type is %d\n", static_cast<unsigned int>(type));
-            printf("write the mpa address is 0x%lx\n", translationRes[0]);
-        }
-
-
-        std::vector<uint8_t> cacheLine(64, 0);
-
-        if (type >= 0b100 || translationRes[2] == 0) {
-            mem_intr->atomicRead(cacheLine.data(), translationRes[0], real_size);
-        } else {
-            assert(sizeMap[type] > translationRes[2]);
-            uint64_t prefixLen = sizeMap[type] - translationRes[2];
-            mem_intr->atomicRead(cacheLine.data(), translationRes[0], prefixLen);
-            mem_intr->atomicRead(cacheLine.data() + prefixLen, translationRes[1], translationRes[2]);
-        }
-
-        new_restoreData(cacheLine, type);
-
-        if (isAddressCovered(origin_addr, pkt->new_backup->getSize(), 1)) {
-            printf("the old type is %d\n", static_cast<unsigned int>(type));
-            printf("the old data is:");
-            for (int i = 0; i < cacheLine.size(); i++) {
-                if (i % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-
-            }
-            printf("\n");
-        }
-
-        /* write the new data */
-        uint8_t offset = origin_addr & 0x3F;
-        memcpy(cacheLine.data() + offset, pkt->getPtr<uint8_t>(), pkt->getSize());
-
-        if (isAddressCovered(origin_addr, pkt->new_backup->getSize(), 1)) {
-            printf("the new data is:");
-            for (int i = 0; i < cacheLine.size(); i++) {
-                if (i % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ", static_cast<unsigned int>(cacheLine[i]));
-
-            }
-            printf("\n");
-        }
-
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-
-           printf("the old metaData is \n");
-            for (int k = 0; k < 64; k++) {
-                printf("%02x",static_cast<unsigned>(metaData[k]));
-            }
-            printf("\n");
-        }
-
-
-        new_updateMetaData(cacheLine, metaData, cacheLineIdx, mem_intr);
-
-        if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-
-           printf("the new metaData is \n");
-            for (int k = 0; k < 64; k++) {
-                printf("%02x",static_cast<unsigned>(metaData[k]));
-            }
-            printf("\n");
-        }
-
-        assert(new_getCoverage(metaData) > cacheLineIdx);
-
-        std::vector<uint8_t> new_cacheLine = cacheLine;
-
-        uint8_t new_type = new_getType(metaData, cacheLineIdx);
-
-        if (new_type < 0b11) {
-            new_cacheLine = compressForNew(cacheLine);
-        } else {
-            assert(new_cacheLine.size() == 64);
-        }
-
-        /* if the cacheline becomes all-zero while the type is not (underflow), the data is stored in compressed form rather than using one byte to hold place */
-        if (new_type != 0 && new_cacheLine.size() == 1) {
-            new_cacheLine = {0, 0, 0, 0, 126};
-        }
-
-        if (isAddressCovered(origin_addr, pkt->new_backup->getSize(), 1)) {
-            printf("the new type is %d\n", static_cast<unsigned int>(new_type));
-            printf("the compressed data is:");
-            for (int i = 0; i < new_cacheLine.size(); i++) {
-                if (i % 8 == 0) {
-                    printf("\n");
-                }
-                printf("%02x ", static_cast<unsigned int>(new_cacheLine[i]));
-
-            }
-            printf("\n");
-        }
-
-        if(new_cacheLine.size() > 44) {
-            assert(new_cacheLine.size() == 64);
-        }
-
-        pkt->setSizeForMC(new_cacheLine.size());
-        pkt->allocateForMC();
-        pkt->setDataForMC(new_cacheLine.data(), 0, new_cacheLine.size());
-
-        std::vector<uint64_t> new_res = new_addressTranslation(metaData, cacheLineIdx);
-        pkt->setAddr(new_res[0]); // translate the address from OSPA to MPA space
-        pkt->newBlockAddr = new_res[1];
-        if (new_type < 0b100) {
-            assert(sizeMap[new_type] > new_res[2]);
-            uint64_t prefixLen = sizeMap[new_type] - new_res[2];
-            if (new_cacheLine.size() > prefixLen) {
-                pkt->suffixLen = new_cacheLine.size() - prefixLen;
-            } else {
-                pkt->suffixLen = 0;
-            }
-        }
-    } else {
-        if (type < 0b100) {
-            real_size = sizeMap[type];
-        }
-        pkt->setSizeForMC(real_size);
-        pkt->allocateForMC();
-
-        pkt->setAddr(translationRes[0]); // translate the address from OSPA to MPA space
-
-        if (isAddressCovered(origin_addr, pkt->getSize(),1)) {
-            printf("read the original mpa address is 0x%lx\n", translationRes[0]);
-        }
-
-        if (type < 0b100) {
-            pkt->newBlockAddr = translationRes[1];
-            pkt->suffixLen = translationRes[2];
-        }
-    }
-}
-
-
-/*
-    select a target page and recompress
-*/
-void
-MemCtrl::readForRecompress(PacketPtr pkt, MemInterface* mem_intr) {
-    PPN target_page = 0;
-    /* TODO: maintain a overflowPages list */
-    // if (overflowPages.empty()) {
-    //     // printf("choose a overflowPage\n");
-    //     target_page = mcache.chooseTarget() / 64;
-    // } else {
-    //     target_page = overflowPages.front();
-    //     overflowPages.pop_front();
-    // }
-    target_page = mcache.chooseTarget() / 64;
-
-    // printf("target_page is %d\n", target_page);
-    std::vector<uint8_t> metaData(64, 0);
-    mem_intr->atomicRead(metaData.data(), target_page * 64, 64);
-
-    uint8_t num_blocks = metaData[1];
-    // printf("num_blocks is %d\n", num_blocks);
-    PacketPtr readPage = new Packet(pkt);
-    readPage->configAsReadPage(pkt, pageSizeMap[num_blocks], num_blocks, target_page);
-
-    assert(pktInProcess == 0);
-
-    for (int i = 0; i < num_blocks; i++) {
-        PacketPtr readBlock = new Packet(readPage);
-        Addr block_addr = 0;
-        for (int j = 0; j < 4; j++) {
-            block_addr = (block_addr << 8) | (metaData[4 * i + 4 + j]);
-        }
-        block_addr = block_addr << 9;
-        Addr block_size = pageSizeMap[i + 1] - pageSizeMap[i];
-        readBlock->configAsReadBlock(readPage, block_addr, block_size, i);
-        assignToQueueForNew(readBlock);
-    }
-}
 
 bool
 MemCtrl::avoidDeadLockForCompr(MemInterface* mem_intr) {
@@ -15193,286 +12604,5 @@ MemCtrl::avoidDeadLockForCompr(MemInterface* mem_intr) {
     return res;
 }
 
-
-void
-MemCtrl::recompressForNew(PacketPtr pkt, std::vector<uint8_t>& metaData) {
-    /* pkt is readPage pkt */
-    std::vector<uint8_t> compressed_page(pkt->getSize(), 0);
-    memcpy(compressed_page.data(), pkt->getPtr<uint8_t>(), pkt->getSize());
-
-    uint8_t coverage = new_getCoverage(metaData);
-
-    if (coverage == 0) {
-        printf("[warning]: the coverage is zero\n");
-        PacketPtr writeBlock = new Packet(pkt);
-        Addr block_addr = 0;
-        for (int u = 0; u < 4; u++) {   // 4B per MPFN
-            block_addr = (block_addr << 8) | (metaData[4 + u]);
-        }
-        block_addr = block_addr << 9;
-        uint64_t block_size = pageSizeMap[1] - pageSizeMap[0];
-        writeBlock->configAsWriteBlock(pkt, block_addr, block_size);
-        memset(writeBlock->getPtr<uint8_t>(), 0, block_size);
-        assignToQueueForNew(writeBlock);
-        return;
-    }
-
-    std::vector<uint8_t> page(4096, 0);
-
-    /* restore the page */
-    uint64_t offset = 0;
-    uint64_t start_pos = metaData[2] * 64;
-    for (int i = 0; i < coverage; i++) {
-        uint8_t type = new_getType(metaData, i);
-        if (type < 0b100) {
-            /* the cacheline is not overflow */
-            std::vector<uint8_t> cacheLine(64, 0);
-            memcpy(cacheLine.data(), compressed_page.data() + offset, sizeMap[type]);
-            new_restoreData(cacheLine, type);
-            memcpy(page.data() + 64 * i, cacheLine.data(), 64);
-
-        } else {
-            assert(start_pos != 0);
-            uint8_t overflowIdx = compressed_page[offset];
-            memcpy(page.data() + 64 * i, compressed_page.data() + overflowIdx * 64 + start_pos, 64);
-        }
-        offset += sizeMap[type & 0b11];
-
-        // printf("\n");
-
-        // for (int rt = 0; rt < 64; rt++) {
-        //     if (rt % 8 == 0) {
-        //         printf("\n");
-        //     }
-        //     printf("%02x ", static_cast<unsigned int>(page[64 * i + rt]));
-        // }
-        // printf("\n");
-
-    }
-
-    /* compress the page and generate the new metaData */
-    std::vector<uint8_t> new_metaData(64, 0);
-    uint64_t new_size = 0;
-    assert(coverage <= 64);
-    new_metaData[0] = 0x80 | coverage;
-
-    for (int i = 0; i < coverage; i++) {
-        std::vector<uint8_t> cacheLine(64);
-        memcpy(cacheLine.data(), page.data() + i * 64, 64);
-        std::vector<uint8_t> compressed_data = compressForNew(cacheLine);
-        memcpy(page.data() + new_size, compressed_data.data(), compressed_data.size());
-        if (isAllZero(cacheLine)) {
-            /* do nothing */
-            assert(compressed_data.size() == 1);
-            new_size += 1;
-        } else {
-            if (compressed_data.size() <= 22) {
-                new_setType(new_metaData, i, 0b001);
-                new_size += 22;
-            } else if (compressed_data.size() <= 44) {
-                new_setType(new_metaData, i, 0b010);
-                new_size += 44;
-            } else {
-                new_setType(new_metaData, i, 0b011);
-                new_size += 64;
-            }
-        }
-    }
-
-    if (coverage == 64) {
-        uint64_t startOverflowRegion = ((new_size + 63) >> 6) << 6;
-        assert(startOverflowRegion >= new_size);
-        new_metaData[2] = (startOverflowRegion / 64);
-        assert(startOverflowRegion < pageSizeMap[9]);
-        new_size = startOverflowRegion;
-    }
-
-
-
-    auto it = std::lower_bound(pageSizeMap.begin(), pageSizeMap.end(), new_size);
-    uint64_t chunk_num = it - pageSizeMap.begin();
-    assert(chunk_num >= 1);
-
-    new_metaData[1] = chunk_num;
-    assert(stat_used_bytes >= pageSizeMap[metaData[1]]);
-    stat_used_bytes -= pageSizeMap[metaData[1]];
-
-    for (int cn = 0; cn < chunk_num; cn++) {
-        new_allocateBlock(new_metaData, cn + 1);
-    }
-    assert(chunk_num <= metaData[1]);
-
-    // if (chunk_num < metaData[1]) {
-        // printf("saved %d blocks \n", metaData[1] - chunk_num);
-    // }
-    /* give back the old blocks */
-    for (int cn = 0; cn < metaData[1]; cn++) {
-        Addr old_addr = 0;
-        for (int u = 0; u < 4; u++){   // 4B per MPFN
-            old_addr = (old_addr << 8) | (metaData[4 * cn + 4 + u]);
-        }
-        if (pageSizeMap[cn + 1] - pageSizeMap[cn] == 512) {
-            fineGrainedFreeList.push_front(old_addr << 9);
-        } else {
-            freeList.push_front(old_addr << 9);
-        }
-    }
-
-    // printf("Recompress: the old metaData is: \n");
-    // for (int k = 0; k < 64; k++) {
-    //     printf("%02x",static_cast<unsigned>(metaData[k]));
-    // }
-    // printf("\n");
-
-    /* update the metaData */
-    metaData = new_metaData;
-
-    // printf("Recompress: the new metaData is: \n");
-    // for (int k = 0; k < 64; k++) {
-    //     printf("%02x",static_cast<unsigned>(metaData[k]));
-    // }
-    // printf("\n");
-
-    /* issue writeBlock pkt to write to memory */
-    pkt->new_subPktCnt = chunk_num;
-    for (int cn = 0; cn < chunk_num; cn++) {
-        PacketPtr writeBlock = new Packet(pkt);
-        Addr block_addr = 0;
-        for (int u = 0; u < 4; u++) {   // 4B per MPFN
-            block_addr = (block_addr << 8) | (metaData[4 * cn + 4 + u]);
-        }
-        block_addr = block_addr << 9;
-        uint64_t block_size = pageSizeMap[cn + 1] - pageSizeMap[cn];
-        writeBlock->configAsWriteBlock(pkt, block_addr, block_size);
-        memcpy(writeBlock->getPtr<uint8_t>(), page.data() + pageSizeMap[cn], block_size);
-        assignToQueueForNew(writeBlock);
-    }
-}
-
-
-void
-MemCtrl::atomicRecompressForNew(std::vector<uint8_t>& compressed_page, std::vector<uint8_t>& metaData, MemInterface* mem_intr) {
-
-    uint8_t coverage = new_getCoverage(metaData);
-    if (coverage == 0) {
-        return;
-    }
-
-    std::vector<uint8_t> page(4096, 0);
-
-    /* restore the page */
-    uint64_t offset = 0;
-    uint64_t start_pos = metaData[2] * 64;
-    for (int i = 0; i < coverage; i++) {
-        uint8_t type = new_getType(metaData, i);
-        if (type < 0b100) {
-            /* the cacheline is not overflow */
-            std::vector<uint8_t> cacheLine(64, 0);
-            memcpy(cacheLine.data(), compressed_page.data() + offset, sizeMap[type]);
-            new_restoreData(cacheLine, type);
-            memcpy(page.data() + 64 * i, cacheLine.data(), 64);
-
-        } else {
-            assert(start_pos != 0);
-            uint8_t overflowIdx = compressed_page[offset];
-            memcpy(page.data() + 64 * i, compressed_page.data() + overflowIdx * 64 + start_pos, 64);
-        }
-        offset += sizeMap[type & 0b11];
-    }
-
-    /* compress the page and generate the new metaData */
-    std::vector<uint8_t> new_metaData(64, 0);
-    uint64_t new_size = 0;
-    assert(coverage <= 64);
-    new_metaData[0] = 0x80 | coverage;
-
-    for (int i = 0; i < coverage; i++) {
-        std::vector<uint8_t> cacheLine(64);
-        memcpy(cacheLine.data(), page.data() + i * 64, 64);
-        std::vector<uint8_t> compressed_data = compressForNew(cacheLine);
-        memcpy(page.data() + new_size, compressed_data.data(), compressed_data.size());
-        if (isAllZero(cacheLine)) {
-            /* do nothing */
-            assert(compressed_data.size() == 1);
-            new_size += 1;
-        } else {
-            if (compressed_data.size() <= 22) {
-                new_setType(new_metaData, i, 0b001);
-                new_size += 22;
-            } else if (compressed_data.size() <= 44) {
-                new_setType(new_metaData, i, 0b010);
-                new_size += 44;
-            } else {
-                new_setType(new_metaData, i, 0b011);
-                new_size += 64;
-            }
-        }
-    }
-
-    if (coverage == 64) {
-        uint64_t startOverflowRegion = ((new_size + 63) >> 6) << 6;
-        assert(startOverflowRegion >= new_size);
-        new_metaData[2] = (startOverflowRegion / 64);
-        assert(startOverflowRegion < pageSizeMap[9]);
-        new_size = startOverflowRegion;
-    }
-
-    auto it = std::lower_bound(pageSizeMap.begin(), pageSizeMap.end(), new_size);
-    uint64_t chunk_num = it - pageSizeMap.begin();
-    assert(chunk_num >= 1);
-
-    new_metaData[1] = chunk_num;
-    assert(stat_used_bytes >= pageSizeMap[metaData[1]]);
-    stat_used_bytes -= pageSizeMap[metaData[1]];
-
-    for (int cn = 0; cn < chunk_num; cn++) {
-        new_allocateBlock(new_metaData, cn + 1);
-    }
-    assert(chunk_num <= metaData[1]);
-
-    // if (chunk_num < metaData[1]) {
-        // printf("saved %d blocks \n", metaData[1] - chunk_num);
-    // }
-    /* give back the old blocks */
-    for (int cn = 0; cn < metaData[1]; cn++) {
-        Addr old_addr = 0;
-        for (int u = 0; u < 4; u++){   // 4B per MPFN
-            old_addr = (old_addr << 8) | (metaData[4 * cn + 4 + u]);
-        }
-        if (pageSizeMap[cn + 1] - pageSizeMap[cn] == 512) {
-            fineGrainedFreeList.push_front(old_addr << 9);
-        } else {
-            freeList.push_front(old_addr << 9);
-        }
-    }
-
-    /* update the metaData */
-    metaData = new_metaData;
-
-    // printf("Recompress: the new metaData is: \n");
-    // for (int k = 0; k < 64; k++) {
-    //     printf("%02x",static_cast<unsigned>(metaData[k]));
-    // }
-    // printf("\n");
-
-
-    /* write to the new space */
-    for (int cn = 0; cn < chunk_num; cn++) {
-        Addr block_addr = 0;
-        for (int u = 0; u < 4; u++) {   // 4B per MPFN
-            block_addr = (block_addr << 8) | (metaData[4 * cn + 4 + u]);
-        }
-        block_addr = block_addr << 9;
-        uint64_t block_size = pageSizeMap[cn + 1] - pageSizeMap[cn];
-        mem_intr->atomicWrite(page, block_addr, block_size, pageSizeMap[cn]);
-
-    }
-}
-
-
 } // namespace memory
 } // namespace gem5
-
-
-
-

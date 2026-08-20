@@ -567,12 +567,17 @@ Packet::configAsReadColdPage(const Addr& addr, uint64_t pageId) {
 }
 
 void 
-Packet::configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page) {
+Packet::configAsWriteColdPage(const Addr &addr, std::vector<uint8_t>& page, uint64_t page_id, Addr source_addr) {
     setAddr(addr);
     setWriteCmd();
     setSizeForMC(page.size());
     allocateForMC();
     setType(DyL_writeColdPage);
+
+    // The completion path publishes the CTE only after this write reaches
+    // memory, so retain both the logical page id and its old ML0/ML1 address.
+    compressPageId = page_id;       // preserve the PPN of compressed page
+    setBackUp(source_addr);         // keep the old ML0/ML1 page address
     memcpy(data, page.data(), page.size());
 }
 
