@@ -299,7 +299,7 @@ class Packet : public Printable, public Extensible<Packet>
     typedef uint32_t PacketType;
     typedef uint32_t PacketTypeForDyL;
     typedef uint32_t PacketTypeForNew;
-    typedef uint32_t PacketTypeForSecure;
+    typedef uint32_t PacketTypeForZipLock;
 
   private:
     enum : FlagsType
@@ -652,27 +652,27 @@ class Packet : public Printable, public Extensible<Packet>
     /* ===== end for new ===== */
 
 
-    /* ===== special for secure ===== */
-    Addr backupForSecure;
+    /* ===== special for ZipLock ===== */
+    Addr backupForZipLock;
 
-    PacketPtr preForSecure;
+    PacketPtr preForZipLock;
 
-    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMapForSecure;
+    std::unordered_map<uint64_t, std::vector<uint8_t>> metaDataMapForZipLock;
 
-    enum : PacketTypeForSecure
+    enum : PacketTypeForZipLock
     {
-        secure_origin              = 0x00000000,
-        secure_auxiliary           = 0x00000001,
-        secure_readMetaData        = 0x00000002,
-        secure_readForCompress     = 0x00000004,
-        secure_writeForCompress    = 0x00000008,
-        secure_readForDecompress   = 0x00000010,
-        secure_writeForDecompress  = 0x00000020,
-        secure_readForWrite        = 0x00000040,
+        zipLock_origin              = 0x00000000,
+        zipLock_auxiliary           = 0x00000001,
+        zipLock_readMetaData        = 0x00000002,
+        zipLock_readForCompress     = 0x00000004,
+        zipLock_writeForCompress    = 0x00000008,
+        zipLock_readForDecompress   = 0x00000010,
+        zipLock_writeForDecompress  = 0x00000020,
+        zipLock_readForWrite        = 0x00000040,
     };
 
-    PacketTypeForSecure securePType;
-    /* ===== end for secure ===== */
+    PacketTypeForZipLock zipLockPType;
+    /* ===== end for ZipLock ===== */
 
 
     /**
@@ -1953,26 +1953,26 @@ class Packet : public Printable, public Extensible<Packet>
 
     /* ============= end for new ============*/
 
-    /* ===== special functionality for secure ===== */
-    void secureSetType(const PacketTypeForSecure& t) { securePType = t; }
+    /* ===== special functionality for ZipLock ===== */
+    void zipLockSetType(const PacketTypeForZipLock& t) { zipLockPType = t; }
 
-    void configSecurePkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead);
+    void configZipLockPkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead);
 
-    void configAsSecureAuxPkt(PacketPtr pkt, Addr addr, uint64_t size);
+    void configAsZipLockAuxPkt(PacketPtr pkt, Addr addr, uint64_t size);
 
-    void configAsSecureReadForCompress(PacketPtr pkt, Addr addr, uint64_t size);
+    void configAsZipLockReadForCompress(PacketPtr pkt, Addr addr, uint64_t size);
 
-    void configAsSecureReadForDecompress(PacketPtr pkt, Addr addr, uint64_t size);
+    void configAsZipLockReadForDecompress(PacketPtr pkt, Addr addr, uint64_t size);
 
-    void configAsSecureReadForWrite(PacketPtr pkt, Addr addr, uint64_t size);
+    void configAsZipLockReadForWrite(PacketPtr pkt, Addr addr, uint64_t size);
 
-    void configAsSecureReadMetaData(PacketPtr pkt, Addr addr, uint64_t size);
+    void configAsZipLockReadMetaData(PacketPtr pkt, Addr addr, uint64_t size);
 
-    void configAsSecureWriteForCompress(PacketPtr pkt, Addr addr, uint8_t* data, uint64_t data_size);
+    void configAsZipLockWriteForCompress(PacketPtr pkt, Addr addr, uint8_t* data, uint64_t data_size);
 
-    void configAsSecureWriteForDecompress(PacketPtr pkt, Addr addr, uint8_t* data, uint64_t data_size);
+    void configAsZipLockWriteForDecompress(PacketPtr pkt, Addr addr, uint8_t* data, uint64_t data_size);
 
-    /* ===== end for secure =====*/
+    /* ===== end for ZipLock =====*/
 };
 
 } // namespace gem5

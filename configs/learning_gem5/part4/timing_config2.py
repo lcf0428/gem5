@@ -7,7 +7,7 @@ from m5.objects import *
 
 parser = argparse.ArgumentParser(description="OOO core with DRAM energy stats and full cache hierarchy")
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
-                    help="Memory controller mode: normal, compresso, DyLeCT")
+                    help="Memory controller mode: normal, compresso, DyLeCT, ZipLock")
 parser.add_argument(
     "--recency_list_size",
     type=int,

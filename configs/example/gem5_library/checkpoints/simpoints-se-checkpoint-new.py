@@ -37,7 +37,7 @@ parser.add_argument("--warmup_interval", type=int, required=True, help="Warmup i
 parser.add_argument("--stdin_file", type=str, help="File to feed to the program's standard input")
 parser.add_argument("--env", type=str, help="env file with enviormant variables")
 parser.add_argument("--mem_operation_mode", type=str, default="normal",
-                    help="Memory controller mode: normal, compresso, DyLeCT, new")
+                    help="Memory controller mode: normal, compresso, DyLeCT, ZipLock")
 parser.add_argument("--recency_list_size", type=int, default=0,
                     help="the recency list size for DyLeCT mode")
 parser.add_argument("--tick_interval", type=int, default=10,

@@ -370,7 +370,7 @@ class MemCtrl : public qos::MemCtrl
     bool addToReadQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
-    bool addToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
+    bool addToReadQueueForZipLock(PacketPtr pkt, unsigned int pkt_count,
                         MemInterface* mem_intr);
 
     /**
@@ -393,7 +393,7 @@ class MemCtrl : public qos::MemCtrl
     void addToWriteQueueForDyL(PacketPtr pkt, unsigned int pkt_count,
                          MemInterface* mem_intr);
 
-    void addToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
+    void addToWriteQueueForZipLock(PacketPtr pkt, unsigned int pkt_count,
                           MemInterface* mem_intr);
 
     /**
@@ -426,7 +426,7 @@ class MemCtrl : public qos::MemCtrl
     virtual void accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
 
-    virtual void accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
+    virtual void accessAndRespondForZipLock(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr);
     /**
      * Determine if there is a packet that can issue.
@@ -1209,29 +1209,29 @@ class MemCtrl : public qos::MemCtrl
 
     /* ====== end for the new architecture ======*/
 
-    /* ===== start for secure architecture ====== */
+    /* ===== start for ZipLock architecture ====== */
 
     uint64_t pktInProcess;
 
-    std::list<PacketPtr> processPktListForSecure;
+    std::list<PacketPtr> processPktListForZipLock;
 
-    Addr startAddrForSecureMetaData;
+    Addr startAddrForZipLockMetaData;
 
-    PacketPtr pendingPktForSecure;
+    PacketPtr pendingPktForZipLock;
 
-    std::unordered_map<PacketPtr, Tick> delayByDecompressForSecure;
+    std::unordered_map<PacketPtr, Tick> delayByDecompressForZipLock;
 
-    bool blockedForSecure;
+    bool blockedForZipLock;
 
-    uint64_t blockedNumForSecure;
+    uint64_t blockedNumForZipLock;
 
-    std::list<PacketPtr> blockedQueueForSecure;
+    std::list<PacketPtr> blockedQueueForZipLock;
 
     std::list<uint64_t> smallChunkList;
 
     std::list<uint64_t> largeChunkList;
 
-    /* ===== end for secure architecture ====== */
+    /* ===== end for ZipLock architecture ====== */
 
     /* ======= start for the stats ====== */
 
@@ -1567,17 +1567,17 @@ class MemCtrl : public qos::MemCtrl
     bool recvTimingReqLogic(PacketPtr pkt);
     bool recvTimingReqLogicForCompr(PacketPtr pkt, bool hasBlocked = false);
     bool recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked = false);
-    bool recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked = false);
+    bool recvTimingReqLogicForZipLock(PacketPtr pkt, bool hasBlocked = false);
 
     bool recvFunctionalLogic(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     bool recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
-    bool recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr);
+    bool recvFunctionalLogicForZipLock(PacketPtr pkt, MemInterface* mem_intr);
 
     Tick recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForCompr(PacketPtr pkt, MemInterface* mem_intr);
     Tick recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr);
-    Tick recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr);
+    Tick recvAtomicLogicForZipLock(PacketPtr pkt, MemInterface* mem_intr);
 
     /* ====== useful functions for compresso implementation =====*/
 
@@ -1738,27 +1738,27 @@ class MemCtrl : public qos::MemCtrl
     bool compressColdPage(const PacketPtr& origin_pkt, MemInterface* mem_intr);
     /* ====== end for DyLeCT ===== */
 
-    /* ===== start functionality for secure ===== */
+    /* ===== start functionality for ZipLock ===== */
 
-    uint64_t parseMetaDataForSecure(const std::vector<uint8_t>& metaData, int type);
+    uint64_t parseMetaDataForZipLock(const std::vector<uint8_t>& metaData, int type);
 
     void tryRecyclePkt(PacketPtr pkt, bool needDecrRefCnt = true);
 
-    void initialMetaDataForSecure(std::vector<uint8_t>& metaDataEntry);
+    void initialMetaDataForZipLock(std::vector<uint8_t>& metaDataEntry);
 
-    void addSubPktToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
+    void addSubPktToWriteQueueForZipLock(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
 
-    bool addSubPktToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
+    bool addSubPktToReadQueueForZipLock(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats);
 
-    Addr allocateChunkForSecure(int chunk_type);
+    Addr allocateChunkForZipLock(int chunk_type);
 
-    void recycleChunkForSecure(Addr chunk_addr, int chunk_type);
+    void recycleChunkForZipLock(Addr chunk_addr, int chunk_type);
 
-    void afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr);
+    void afterDecompForZipLock(PacketPtr pkt, MemInterface* mem_intr);
 
     void updateMetaDataForInProcessPkt(bool isEligible, PPN ppn, const std::vector<uint8_t>& metaData);
 
-    /* ===== end functinoality for secure ===== */
+    /* ===== end functinoality for ZipLock ===== */
   };
 
 } // namespace memory

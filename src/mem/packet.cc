@@ -735,9 +735,9 @@ Packet::configAsWriteBlock(PacketPtr pkt, Addr addr, uint64_t size) {
 }
 
 
-/* start implementation for secure functionalities */
+/* start implementation for ZipLock functionalities */
 void
-Packet::configSecurePkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead) {
+Packet::configZipLockPkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead) {
     if (isRead) {
         setReadCmd();
     } else {
@@ -747,57 +747,57 @@ Packet::configSecurePkt(PacketPtr pkt, Addr addr, uint64_t size, bool isRead) {
     setAddr(addr);
     setSizeForMC(size);
     allocateForMC();
-    preForSecure = pkt;
+    preForZipLock = pkt;
     pkt->ref_cnt++;
 }
 
 void
-Packet::configAsSecureAuxPkt(PacketPtr pkt, Addr addr, uint64_t size) {
-    configSecurePkt(pkt, addr, size, pkt->isRead());
+Packet::configAsZipLockAuxPkt(PacketPtr pkt, Addr addr, uint64_t size) {
+    configZipLockPkt(pkt, addr, size, pkt->isRead());
     assert(pkt->getSize() == size);
     memcpy(data, pkt->getPtr<uint8_t>(), size);
-    secureSetType(secure_auxiliary);
+    zipLockSetType(zipLock_auxiliary);
 }
 
 
 void
-Packet::configAsSecureReadForCompress(PacketPtr pkt, Addr addr, uint64_t size) {
-    configSecurePkt(pkt, addr, size, true);
-    secureSetType(secure_readForCompress);
+Packet::configAsZipLockReadForCompress(PacketPtr pkt, Addr addr, uint64_t size) {
+    configZipLockPkt(pkt, addr, size, true);
+    zipLockSetType(zipLock_readForCompress);
 }
 
 void
-Packet::configAsSecureReadForDecompress(PacketPtr pkt, Addr addr, uint64_t size) {
-    configSecurePkt(pkt, addr, size, true);
-    secureSetType(secure_readForDecompress);
+Packet::configAsZipLockReadForDecompress(PacketPtr pkt, Addr addr, uint64_t size) {
+    configZipLockPkt(pkt, addr, size, true);
+    zipLockSetType(zipLock_readForDecompress);
 }
 
 void
-Packet::configAsSecureReadForWrite(PacketPtr pkt, Addr addr, uint64_t size) {
-    configSecurePkt(pkt, addr, size, true);
-    secureSetType(secure_readForWrite);
+Packet::configAsZipLockReadForWrite(PacketPtr pkt, Addr addr, uint64_t size) {
+    configZipLockPkt(pkt, addr, size, true);
+    zipLockSetType(zipLock_readForWrite);
 }
 
 void
-Packet::configAsSecureReadMetaData(PacketPtr pkt, Addr addr, uint64_t size) {
-    configSecurePkt(pkt, addr, size, true);
-    secureSetType(secure_readMetaData);
+Packet::configAsZipLockReadMetaData(PacketPtr pkt, Addr addr, uint64_t size) {
+    configZipLockPkt(pkt, addr, size, true);
+    zipLockSetType(zipLock_readMetaData);
 }
 
 void
-Packet::configAsSecureWriteForCompress(PacketPtr pkt, Addr addr, uint8_t* payload_data, uint64_t data_size) {
-    configSecurePkt(pkt, addr, data_size, false);
+Packet::configAsZipLockWriteForCompress(PacketPtr pkt, Addr addr, uint8_t* payload_data, uint64_t data_size) {
+    configZipLockPkt(pkt, addr, data_size, false);
     memcpy(data, payload_data, data_size);
-    secureSetType(secure_writeForCompress);
+    zipLockSetType(zipLock_writeForCompress);
 }
 
 void
-Packet::configAsSecureWriteForDecompress(PacketPtr pkt, Addr addr, uint8_t* payload_data, uint64_t data_size) {
-    configSecurePkt(pkt, addr, data_size, false);
+Packet::configAsZipLockWriteForDecompress(PacketPtr pkt, Addr addr, uint8_t* payload_data, uint64_t data_size) {
+    configZipLockPkt(pkt, addr, data_size, false);
     memcpy(data, payload_data, data_size);
-    secureSetType(secure_writeForDecompress);
+    zipLockSetType(zipLock_writeForDecompress);
 }
 
-/* end for secure */
+/* end for ZipLock */
 
 } // namespace gem5

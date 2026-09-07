@@ -1,6 +1,6 @@
-# Secure Hardware Memory Compression in gem5
+# ZipLock: Secure Hardware Memory Compression in gem5
 
-This project reproduces prior hardware memory-compression designs in gem5 and introduces a new secure hardware memory-compression mechanism proposed in our paper, **XXX**.
+This project reproduces prior hardware memory-compression designs in gem5 and introduces **ZipLock**, a new secure hardware memory-compression mechanism proposed in our paper, **XXX**.
 
 ## Memory-Controller Modes
 
@@ -11,7 +11,7 @@ The memory controller supports four operating modes:
 | `normal` | Original gem5 implementation without memory compression |
 | `DyLeCT` | Implementation based on DyLeCT [1] |
 | `compresso` | Implementation based on Compresso [2] |
-| `secure` | Our proposed secure memory-compression design |
+| `ZipLock` | Our proposed secure memory-compression design |
 
 ## Build
 

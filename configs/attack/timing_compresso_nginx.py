@@ -11,7 +11,7 @@ parser.add_argument(
     "--mem_operation_mode",
     type=str,
     default="normal",
-    help="memory controller operation mode: normal, compresso, DyLeCT",
+    help="memory controller operation mode: normal, compresso, DyLeCT, ZipLock",
 )
 
 parser.add_argument(

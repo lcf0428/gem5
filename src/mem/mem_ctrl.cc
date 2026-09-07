@@ -174,9 +174,9 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     recomprInterval(10000000),
     readBufferSizeForNew(dram->readBufferSize),
     writeBufferSizeForNew(dram->writeBufferSize),
-    blockedForSecure(false),
-    pendingPktForSecure(nullptr),
-    blockedNumForSecure(0),
+    blockedForZipLock(false),
+    pendingPktForZipLock(nullptr),
+    blockedNumForZipLock(0),
     lastRecordTick(0), passedInterval(0),
     recordInterval(0),
     stat_used_bytes(0), stat_max_used_bytes(0),
@@ -229,8 +229,8 @@ MemCtrl::init()
         printf("enter the compresso mode\n");
     } else if (operationMode == "DyLeCT") {
         printf("enter the DyLeCT mode\n");
-    } else if (operationMode == "secure") {
-        printf("enter the secure mode\n");
+    } else if (operationMode == "ZipLock") {
+        printf("enter the ZipLock mode\n");
     } else {
         panic("unknown mode for memory controller");
     }
@@ -302,16 +302,16 @@ MemCtrl::init()
         }
 
         pageInCompress = std::make_pair(0, true);
-    } else if (operationMode == "secure") {
-        startAddrForSecureMetaData = 0;
-        Addr realStartAddr = ALIGN(startAddrForSecureMetaData + numPages * 8);
+    } else if (operationMode == "ZipLock") {
+        startAddrForZipLockMetaData = 0;
+        Addr realStartAddr = ALIGN(startAddrForZipLockMetaData + numPages * 8);
         uint64_t dramCapacity = ALIGN(dram->capacity() * (1024 * 1024) - 4095);
         
         /* initially, all space is divided by large chunks */
         for (uint64_t addr = realStartAddr; addr < (dramCapacity - 4096); addr += 4096) {
             largeChunkList.emplace_back(addr);
         }
-        blockedQueueForSecure.clear();
+        blockedQueueForZipLock.clear();
 
         uint16_t new_cap = CACHE_SIZE / 8;
         mcache.post_init(new_cap);
@@ -335,7 +335,7 @@ MemCtrl::startup()
 
 void
 MemCtrl::serialize(gem5::CheckpointOut &cp) const {
-    if(operationMode == "secure"){
+    if(operationMode == "ZipLock"){
         printf("when serialize \n");
         printf("the size of largeChunkList is %d\n", largeChunkList.size());
         printf("the size of smallChunkList is %d\n", smallChunkList.size());
@@ -424,7 +424,7 @@ MemCtrl::serialize(gem5::CheckpointOut &cp) const {
 void
 MemCtrl::unserialize(gem5::CheckpointIn &cp) {
 
-    if(operationMode == "secure"){
+    if(operationMode == "ZipLock"){
         UNSERIALIZE_CONTAINER(largeChunkList);
         UNSERIALIZE_CONTAINER(smallChunkList);
         printf("after unserialize \n");
@@ -570,8 +570,8 @@ MemCtrl::recvAtomic(PacketPtr pkt)
         res = recvAtomicLogicForCompr(pkt, dram);
     } else if (operationMode == "DyLeCT") {
         res = recvAtomicLogicForDyL(pkt, dram);
-    } else if (operationMode == "secure") {
-        res = recvAtomicLogicForSecure(pkt, dram);
+    } else if (operationMode == "ZipLock") {
+        res = recvAtomicLogicForZipLock(pkt, dram);
     } else {
         panic("unknown operation mode for Memory Controller");
     }
@@ -1219,7 +1219,7 @@ MemCtrl::recvAtomicLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 }
 
 Tick
-MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
+MemCtrl::recvAtomicLogicForZipLock(PacketPtr pkt, MemInterface* mem_intr) {
     DPRINTF(MemCtrl, "recvAtomic: %s 0x%x\n",
                      pkt->cmdString(), pkt->getAddr());
 
@@ -1234,14 +1234,14 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     // calculate the dram address of the metaDatas
     Addr phyAddr = pkt->getAddr();
     PPN ppn = ((phyAddr >> 12) & ((1ULL << 52) - 1));
-    Addr mAddr = startAddrForSecureMetaData + ppn * 8;
+    Addr mAddr = startAddrForZipLockMetaData + ppn * 8;
 
     std::vector<uint8_t> metaDataEntry = mcache.find(mAddr);
 
     Addr dram_addr = 0;
 
     PacketPtr auxPkt = new Packet(pkt);
-    auxPkt->backupForSecure = phyAddr;
+    auxPkt->backupForZipLock = phyAddr;
 
     if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
         printf("the first elem of metadata is %lx\n", metaDataEntry[0]);
@@ -1257,7 +1257,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
         assert(((metaDataEntry[0] >> 6) & 0x1) == 0);
         /* the page should be uncompressed */
 
-        Addr page_dram_addr = parseMetaDataForSecure(metaDataEntry, 0);
+        Addr page_dram_addr = parseMetaDataForZipLock(metaDataEntry, 0);
         dram_addr = page_dram_addr | (phyAddr & ((0x1 << 12) - 1));
 
     } else {
@@ -1272,7 +1272,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             std::vector<uint8_t> evicted_matedata_entry = mcache.find(evicted_page_mAddr, false);
             mcache.pop();
 
-            PPN evicted_ppn = (evicted_page_mAddr - startAddrForSecureMetaData) / 8;
+            PPN evicted_ppn = (evicted_page_mAddr - startAddrForZipLockMetaData) / 8;
             Addr evicted_phy_addr = evicted_ppn * 4096;
 
             if (isAddressCovered(evicted_phy_addr, 4096, 1)) {
@@ -1296,7 +1296,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
             /* read the evicted page */
             std::vector<uint8_t> origin_page(4096);
-            Addr evicted_page_dramAddr = parseMetaDataForSecure(evicted_matedata_entry, 0);
+            Addr evicted_page_dramAddr = parseMetaDataForZipLock(evicted_matedata_entry, 0);
 
             mem_intr->atomicRead(origin_page.data(), evicted_page_dramAddr, 4096);
 
@@ -1305,7 +1305,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
             if (cPage.size() <= 2048) {
                 /* the page is compressible */
-                Addr new_chunk_addr = allocateChunkForSecure(0);
+                Addr new_chunk_addr = allocateChunkForZipLock(0);
 
                 if (isAddressCovered(evicted_phy_addr, 4096, 1)) {
                     printf("the page is compressible\n");
@@ -1314,7 +1314,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
                 mem_intr->atomicWrite(cPage, new_chunk_addr, cPage.size());
 
-                recycleChunkForSecure(evicted_page_dramAddr, 1);
+                recycleChunkForZipLock(evicted_page_dramAddr, 1);
 
                 /* update the metaData */
 
@@ -1359,7 +1359,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
         if(metaData[0] < (0x1 << 7)) {
             /* the metaData is invalid now */
-            initialMetaDataForSecure(metaData);
+            initialMetaDataForZipLock(metaData);
 
             if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
                 printf("atomic: the metadata is invalid now\n");
@@ -1378,8 +1378,8 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
                 printf("the page is currently compressed\n");
             }
 
-            uint64_t cSize = parseMetaDataForSecure(metaData, 1);
-            Addr old_chunk_addr = parseMetaDataForSecure(metaData, 0);
+            uint64_t cSize = parseMetaDataForZipLock(metaData, 1);
+            Addr old_chunk_addr = parseMetaDataForZipLock(metaData, 0);
             std::vector<uint8_t> cPage(cSize);
             mem_intr->atomicRead(cPage.data(), old_chunk_addr, cSize);
 
@@ -1387,8 +1387,8 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             assert(origin_page.size() == 4096);
 
             /* write the uncompressed page to a new place */
-            Addr new_chunk_addr = allocateChunkForSecure(1);
-            recycleChunkForSecure(old_chunk_addr, 0);
+            Addr new_chunk_addr = allocateChunkForZipLock(1);
+            recycleChunkForZipLock(old_chunk_addr, 0);
 
             mem_intr->atomicWrite(origin_page, new_chunk_addr, 4096);
 
@@ -1407,7 +1407,7 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
         mcache.add(mAddr, metaDataEntry);
 
-        Addr page_dram_addr = parseMetaDataForSecure(metaData, 0);
+        Addr page_dram_addr = parseMetaDataForZipLock(metaData, 0);
         dram_addr = page_dram_addr | (phyAddr & ((0x1 << 12) - 1));
 
     }
@@ -1416,10 +1416,10 @@ MemCtrl::recvAtomicLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
         printf("atomic: the dram_addr is 0x%lx\n", dram_addr);
     }
 
-    auxPkt->configAsSecureAuxPkt(pkt, dram_addr, pkt->getSize());
+    auxPkt->configAsZipLockAuxPkt(pkt, dram_addr, pkt->getSize());
 
     // do the actual memory access and turn the packet into a response
-    mem_intr->accessForSecure(auxPkt, access_cnt);
+    mem_intr->accessForZipLock(auxPkt, access_cnt);
 
     delete auxPkt;
 
@@ -2992,8 +2992,8 @@ MemCtrl::recvTimingReq(PacketPtr pkt)
     } else if (operationMode == "DyLeCT") {
         monitor.insert(pkt);
         isAccepted = recvTimingReqLogicForDyL(pkt);
-    } else if (operationMode == "secure") {
-        isAccepted = recvTimingReqLogicForSecure(pkt);
+    } else if (operationMode == "ZipLock") {
+        isAccepted = recvTimingReqLogicForZipLock(pkt);
     }
     return isAccepted;
 }
@@ -4128,7 +4128,7 @@ MemCtrl::recvTimingReqLogicForDyL(PacketPtr pkt, bool hasBlocked) {
 }
 
 uint64_t
-MemCtrl::parseMetaDataForSecure(const std::vector<uint8_t>& metaData, int type) {
+MemCtrl::parseMetaDataForZipLock(const std::vector<uint8_t>& metaData, int type) {
     /*
         type = 0: return dram address
         type = 1: return compressed size
@@ -4152,7 +4152,7 @@ MemCtrl::parseMetaDataForSecure(const std::vector<uint8_t>& metaData, int type) 
 }
 
 bool
-MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
+MemCtrl::recvTimingReqLogicForZipLock(PacketPtr pkt, bool hasBlocked)
 {
     if (!hasBlocked) {
         // Calc avg gap between requests
@@ -4161,7 +4161,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
         }
         prevArrival = curTick();
     } else {
-        assert(!blockedForSecure);
+        assert(!blockedForZipLock);
     }
 
     recvLastPkt = curTick();
@@ -4179,11 +4179,11 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
     unsigned offset = pkt->getAddr() & (burst_size - 1);
     unsigned int pkt_count = divCeil(offset + size, burst_size);
 
-    if (blockedForSecure) {
+    if (blockedForZipLock) {
         assert(!hasBlocked);
-        if ((blockedNumForSecure + pkt_count) <= std::max(readBufferSize, writeBufferSize)) {
-            blockedQueueForSecure.emplace_back(pkt);
-            blockedNumForSecure += pkt_count;
+        if ((blockedNumForZipLock + pkt_count) <= std::max(readBufferSize, writeBufferSize)) {
+            blockedQueueForZipLock.emplace_back(pkt);
+            blockedNumForZipLock += pkt_count;
             return true;
         } else {
             if(pkt->isWrite()) {
@@ -4230,7 +4230,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
 
     /* create an auxiliary pkt */
     PacketPtr auxPkt = new Packet(pkt);
-    auxPkt->configAsSecureAuxPkt(pkt, pkt->getAddr(), pkt->getSize());
+    auxPkt->configAsZipLockAuxPkt(pkt, pkt->getAddr(), pkt->getSize());
 
     if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 0)) {
         printf("\n\n================\n\n");
@@ -4240,12 +4240,12 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
         fflush(stdout);
     }
 
-    processPktListForSecure.emplace_back(auxPkt);
+    processPktListForZipLock.emplace_back(auxPkt);
 
     PPN ppn = (pkt->getAddr()) >> 12;
 
     /* cal the dram address for metadata */
-    Addr mAddr = startAddrForSecureMetaData + ppn * 8;
+    Addr mAddr = startAddrForZipLockMetaData + ppn * 8;
 
     // check if the metadata cache hit
     std::vector<uint8_t> metaDataEntry = mcache.find(mAddr);
@@ -4265,13 +4265,13 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
         }
 
         // set backup
-        auxPkt->backupForSecure = pkt->getAddr();
+        auxPkt->backupForZipLock = pkt->getAddr();
 
         // prepare the metadata info
-        auxPkt->metaDataMapForSecure[ppn] = metaDataCandi;
+        auxPkt->metaDataMapForZipLock[ppn] = metaDataCandi;
 
         if (pkt->isWrite()) {
-            addToWriteQueueForSecure(auxPkt, pkt_count, dram);
+            addToWriteQueueForZipLock(auxPkt, pkt_count, dram);
             // If we are not already scheduled to get a request out of the
             // queue, do so now
             if (!nextReqEvent.scheduled()) {
@@ -4281,7 +4281,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
             stats.writeReqs++;
             stats.bytesWrittenSys += size;
         } else {
-            if (!addToReadQueueForSecure(auxPkt, pkt_count, dram)) {
+            if (!addToReadQueueForZipLock(auxPkt, pkt_count, dram)) {
                 // If we are not already scheduled to get a request out of the
                 // queue, do so now
                 if (!nextReqEvent.scheduled()) {
@@ -4296,25 +4296,25 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
         if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
             printf("the cache miss\n");
         }
-        blockedForSecure = true;
+        blockedForZipLock = true;
 
         if (mcache.isFull()) {
 
             Addr victim_page_maddr = mcache.lastElemAddr();
-            PPN victim_page_ppn = (victim_page_maddr - startAddrForSecureMetaData) / 8;
+            PPN victim_page_ppn = (victim_page_maddr - startAddrForZipLockMetaData) / 8;
             assert(mcache.isExist(victim_page_maddr));
             std::vector<uint8_t> metaData = mcache.find(victim_page_maddr, false);
             mcache.pop();
-            Addr dram_addr = parseMetaDataForSecure(metaData, 0);
+            Addr dram_addr = parseMetaDataForZipLock(metaData, 0);
 
             /* create a readForCompress pkt */
 
 
             PacketPtr readForCompress = new Packet(auxPkt);
-            readForCompress->configAsSecureReadForCompress(auxPkt, dram_addr, 4096);
-            readForCompress->metaDataMapForSecure[victim_page_ppn] = metaData;
+            readForCompress->configAsZipLockReadForCompress(auxPkt, dram_addr, 4096);
+            readForCompress->metaDataMapForZipLock[victim_page_ppn] = metaData;
 
-            pendingPktForSecure = readForCompress;
+            pendingPktForZipLock = readForCompress;
 
             if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
                 printf("the next pkt is readForCompress\n");
@@ -4323,22 +4323,22 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
         } else {
             /* create a readMetaData pkt */
             PacketPtr readMetaData = new Packet(auxPkt);
-            readMetaData->configAsSecureReadMetaData(auxPkt, mAddr, 8);
+            readMetaData->configAsZipLockReadMetaData(auxPkt, mAddr, 8);
 
-            pendingPktForSecure = readMetaData;
+            pendingPktForZipLock = readMetaData;
 
             if (isAddressCovered(pkt->getAddr(), pkt->getSize(), 1)) {
-                printf("secure: create a readMetaData pkt: 0x%lx\n", readMetaData);
+                printf("ZipLock: create a readMetaData pkt: 0x%lx\n", readMetaData);
                 printf("the next pkt is readMetaData\n");
             }
         }
 
         if (pktInProcess == 0) {
-            unsigned p_size = pendingPktForSecure->getSize();
-            unsigned p_offset = pendingPktForSecure->getAddr() & (burst_size - 1);
+            unsigned p_size = pendingPktForZipLock->getSize();
+            unsigned p_offset = pendingPktForZipLock->getAddr() & (burst_size - 1);
             unsigned int p_pkt_count = divCeil(p_offset + p_size, burst_size);
 
-            if (!addToReadQueueForSecure(pendingPktForSecure, p_pkt_count, dram)) {
+            if (!addToReadQueueForZipLock(pendingPktForZipLock, p_pkt_count, dram)) {
                 // If we are not already scheduled to get a request out of the
                 // queue, do so now
                 if (!nextReqEvent.scheduled()) {
@@ -4347,7 +4347,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
                 }
             }
 
-            pendingPktForSecure = nullptr;
+            pendingPktForZipLock = nullptr;
         }
     }
 
@@ -4355,7 +4355,7 @@ MemCtrl::recvTimingReqLogicForSecure(PacketPtr pkt, bool hasBlocked)
 }
 
 void
-MemCtrl::addSubPktToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats) {
+MemCtrl::addSubPktToWriteQueueForZipLock(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats) {
     // if the request size is larger than burst size, the pkt is split into
     // multiple packets
     const Addr base_addr = pkt->getAddr();
@@ -4431,19 +4431,19 @@ MemCtrl::addSubPktToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count, M
 }
 
 void
-MemCtrl::addToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
+MemCtrl::addToWriteQueueForZipLock(PacketPtr pkt, unsigned int pkt_count,
                                         MemInterface* mem_intr)
 {
     // only add to the write queue here. whenever the request is
     // eventually done, set the readyTime, and call schedule()
     assert(pkt->isWrite());
 
-    if (pkt->securePType == 0x1) {
+    if (pkt->zipLockPType == 0x1) {
         /* auxPkt */
-        addSubPktToWriteQueueForSecure(pkt, pkt_count, mem_intr, true);
+        addSubPktToWriteQueueForZipLock(pkt, pkt_count, mem_intr, true);
         pktInProcess++;
     } else {
-        addSubPktToWriteQueueForSecure(pkt, pkt_count, mem_intr, false);
+        addSubPktToWriteQueueForZipLock(pkt, pkt_count, mem_intr, false);
     }
 
     // we do not wait for the writes to be send to the actual memory,
@@ -4451,11 +4451,11 @@ MemCtrl::addToWriteQueueForSecure(PacketPtr pkt, unsigned int pkt_count,
     // snoop the write queue for any upcoming reads
     // @todo, if a pkt size is larger than burst size, we might need a
     // different front end latency
-    accessAndRespondForSecure(pkt, frontendLatency, mem_intr);
+    accessAndRespondForZipLock(pkt, frontendLatency, mem_intr);
 }
 
 bool
-MemCtrl::addSubPktToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats) {
+MemCtrl::addSubPktToReadQueueForZipLock(PacketPtr pkt, unsigned int pkt_count, MemInterface* mem_intr, bool updateStats) {
     const Addr base_addr = pkt->getAddr();
     Addr addr = base_addr;
     uint32_t burst_size = mem_intr->bytesPerBurst();
@@ -4562,7 +4562,7 @@ MemCtrl::addSubPktToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, Me
 
     // If all packets are serviced by write queue, we send the repsonse back
     if (pktsServicedByWrQ == pkt_count) {
-        accessAndRespondForSecure(pkt, frontendLatency, mem_intr);
+        accessAndRespondForZipLock(pkt, frontendLatency, mem_intr);
         return true;
     }
 
@@ -4575,7 +4575,7 @@ MemCtrl::addSubPktToReadQueueForSecure(PacketPtr pkt, unsigned int pkt_count, Me
 }
 
 bool
-MemCtrl::addToReadQueueForSecure(PacketPtr pkt,
+MemCtrl::addToReadQueueForZipLock(PacketPtr pkt,
                 unsigned int pkt_count, MemInterface* mem_intr)
 {
     // only add to the read queue here. whenever the request is
@@ -4592,11 +4592,11 @@ MemCtrl::addToReadQueueForSecure(PacketPtr pkt,
     // check read packets against packets in write queue.
     bool allServicedByWrQ = false;
 
-    if (pkt->securePType == 0x1) {
+    if (pkt->zipLockPType == 0x1) {
         pktInProcess++;
-        allServicedByWrQ = addSubPktToReadQueueForSecure(pkt, pkt_count, mem_intr, true);
+        allServicedByWrQ = addSubPktToReadQueueForZipLock(pkt, pkt_count, mem_intr, true);
     } else {
-        allServicedByWrQ = addSubPktToReadQueueForSecure(pkt, pkt_count, mem_intr, false);
+        allServicedByWrQ = addSubPktToReadQueueForZipLock(pkt, pkt_count, mem_intr, false);
     }
 
     return allServicedByWrQ;
@@ -4604,10 +4604,10 @@ MemCtrl::addToReadQueueForSecure(PacketPtr pkt,
 
 
 void
-MemCtrl::afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr)
+MemCtrl::afterDecompForZipLock(PacketPtr pkt, MemInterface* mem_intr)
 {
     /* the pkt is writeForDecompress */
-    assert(pkt->securePType == 0x20);
+    assert(pkt->zipLockPType == 0x20);
 
     unsigned size = pkt->getSize();
     uint32_t burst_size = mem_intr->bytesPerBurst();
@@ -4615,7 +4615,7 @@ MemCtrl::afterDecompForSecure(PacketPtr pkt, MemInterface* mem_intr)
     unsigned offset = pkt->getAddr() & (burst_size - 1);
     unsigned int pkt_count = divCeil(offset + size, burst_size);
 
-    addToWriteQueueForSecure(pkt, pkt_count, mem_intr);
+    addToWriteQueueForZipLock(pkt, pkt_count, mem_intr);
     // If we are not already scheduled to get a request out of the
     // queue, do so now
     if (!nextReqEvent.scheduled()) {
@@ -4659,8 +4659,8 @@ MemCtrl::processRespondEvent(MemInterface* mem_intr,
             } else if (operationMode == "DyLeCT") {
                 accessAndRespondForDyL(mem_pkt->pkt, frontendLatency + backendLatency,
                                 mem_intr);
-            } else if (operationMode == "secure") {
-                accessAndRespondForSecure(mem_pkt->pkt, frontendLatency + backendLatency,
+            } else if (operationMode == "ZipLock") {
+                accessAndRespondForZipLock(mem_pkt->pkt, frontendLatency + backendLatency,
                                 mem_intr);
             } else {
                 panic("unknown operation mode for memory controller");
@@ -4681,8 +4681,8 @@ MemCtrl::processRespondEvent(MemInterface* mem_intr,
         } else if (operationMode == "DyLeCT") {
             accessAndRespondForDyL(mem_pkt->pkt, frontendLatency + backendLatency,
                             mem_intr);
-        } else if (operationMode == "secure") {
-            accessAndRespondForSecure(mem_pkt->pkt, frontendLatency + backendLatency,
+        } else if (operationMode == "ZipLock") {
+            accessAndRespondForZipLock(mem_pkt->pkt, frontendLatency + backendLatency,
                             mem_intr);
         } else {
             panic("unknown operation mode for memory controller");
@@ -6306,7 +6306,7 @@ MemCtrl::accessAndRespondForDyL(PacketPtr pkt, Tick static_latency,
 }
 
 /*
-    try to recycle pkt for secure based on the reference count
+    try to recycle pkt for ZipLock based on the reference count
 */
 void
 MemCtrl::tryRecyclePkt(PacketPtr pkt, bool needDecrRefCnt) {
@@ -6321,11 +6321,11 @@ MemCtrl::tryRecyclePkt(PacketPtr pkt, bool needDecrRefCnt) {
 }
 
 /*
-    initialize the metadata for secure when the corresponding page is first visited
+    initialize the metadata for ZipLock when the corresponding page is first visited
 */
 void
-MemCtrl::initialMetaDataForSecure(std::vector<uint8_t>& metaDataEntry) {
-    Addr chunk_addr = allocateChunkForSecure(1);
+MemCtrl::initialMetaDataForZipLock(std::vector<uint8_t>& metaDataEntry) {
+    Addr chunk_addr = allocateChunkForZipLock(1);
 
     metaDataEntry[0] = 0x80;
 
@@ -6343,7 +6343,7 @@ MemCtrl::initialMetaDataForSecure(std::vector<uint8_t>& metaDataEntry) {
     chunk_type=1: allocate 4096-Byte chunk
 */
 Addr
-MemCtrl::allocateChunkForSecure(int chunk_type) {
+MemCtrl::allocateChunkForZipLock(int chunk_type) {
     Addr chunk_addr = 0;
     if (chunk_type == 1) {
         if (largeChunkList.size() <= 0) {
@@ -6381,7 +6381,7 @@ MemCtrl::allocateChunkForSecure(int chunk_type) {
 }
 
 void
-MemCtrl::recycleChunkForSecure(Addr chunk_addr, int chunk_type) {
+MemCtrl::recycleChunkForZipLock(Addr chunk_addr, int chunk_type) {
     if (chunk_type == 1) {
         largeChunkList.emplace_back(chunk_addr);
         // assert(stat_used_bytes >= 4096);
@@ -6395,23 +6395,23 @@ MemCtrl::recycleChunkForSecure(Addr chunk_addr, int chunk_type) {
 
 void
 MemCtrl::updateMetaDataForInProcessPkt(bool isEligible, PPN ppn, const std::vector<uint8_t>& metaData) {
-    for (auto pkt: processPktListForSecure) {
-        if (pkt->metaDataMapForSecure.find(ppn) != pkt->metaDataMapForSecure.end()) {
+    for (auto pkt: processPktListForZipLock) {
+        if (pkt->metaDataMapForZipLock.find(ppn) != pkt->metaDataMapForZipLock.end()) {
             if (!isEligible) {
                 panic("the preceeding pkt is still in process, should not compress the page now\n");
             } else {
-                pkt->metaDataMapForSecure[ppn] = metaData;
+                pkt->metaDataMapForZipLock[ppn] = metaData;
             }
         }
     }
 }
 
 void
-MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
+MemCtrl::accessAndRespondForZipLock(PacketPtr pkt, Tick static_latency,
                                                 MemInterface* mem_intr)
 {
-    if (pkt->securePType == 0x1) {
-        PacketPtr origin_pkt = pkt->preForSecure;
+    if (pkt->zipLockPType == 0x1) {
+        PacketPtr origin_pkt = pkt->preForZipLock;
 
         DPRINTF(MemCtrl, "Responding to Address %#x.. \n", origin_pkt->getAddr());
 
@@ -6425,8 +6425,8 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         Addr phyAddr = origin_pkt->getAddr();
         PPN ppn = phyAddr >> 12;
 
-        assert(pkt->metaDataMapForSecure.find(ppn) != pkt->metaDataMapForSecure.end());
-        std::vector<uint8_t> metaData = pkt->metaDataMapForSecure[ppn];
+        assert(pkt->metaDataMapForZipLock.find(ppn) != pkt->metaDataMapForZipLock.end());
+        std::vector<uint8_t> metaData = pkt->metaDataMapForZipLock[ppn];
 
         if (isAddressCovered(origin_pkt->getAddr(), origin_pkt->getSize(), 1)) {
             printf("the ppn is %d\n", ppn);
@@ -6439,7 +6439,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             printf("\n");
         }
 
-        Addr page_dram_addr = parseMetaDataForSecure(metaData, 0);
+        Addr page_dram_addr = parseMetaDataForZipLock(metaData, 0);
         Addr dram_addr = page_dram_addr | (phyAddr & ((0x1 << 12) - 1));
 
         if (isAddressCovered(origin_pkt->getAddr(), origin_pkt->getSize(), 1)) {
@@ -6456,30 +6456,30 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             stats.cpuToMemTotalBytes += tranfer_bytes;
         }
 
-        mem_intr->accessForSecure(pkt, access_cnt);
+        mem_intr->accessForZipLock(pkt, access_cnt);
 
-        processPktListForSecure.remove(pkt);
+        processPktListForZipLock.remove(pkt);
 
         assert(pktInProcess > 0);
         pktInProcess--;
-        if (pktInProcess == 0 && blockedForSecure) {
-            /* pendingPktForSecure is initialized in recvTimingReqLogicForSecure */
+        if (pktInProcess == 0 && blockedForZipLock) {
+            /* pendingPktForZipLock is initialized in recvTimingReqLogicForZipLock */
 
-            assert(pendingPktForSecure != nullptr);
+            assert(pendingPktForZipLock != nullptr);
 
-            unsigned size = pendingPktForSecure->getSize();
+            unsigned size = pendingPktForZipLock->getSize();
             uint32_t burst_size = mem_intr->bytesPerBurst();
 
-            unsigned offset = pendingPktForSecure->getAddr() & (burst_size - 1);
+            unsigned offset = pendingPktForZipLock->getAddr() & (burst_size - 1);
             unsigned int pkt_count = divCeil(offset + size, burst_size);
 
-            if(!addToReadQueueForSecure(pendingPktForSecure, pkt_count, mem_intr)) {
+            if(!addToReadQueueForZipLock(pendingPktForZipLock, pkt_count, mem_intr)) {
                 if (!nextReqEvent.scheduled()) {
                     DPRINTF(MemCtrl, "Request scheduled immediately\n");
                     schedule(nextReqEvent, curTick());
                 }
             }
-            pendingPktForSecure = nullptr;
+            pendingPktForZipLock = nullptr;
         }
 
         // turn packet around to go back to requestor if response expected
@@ -6508,10 +6508,10 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         tryRecyclePkt(pkt, true);
 
-    } else if (pkt->securePType == 0x2) {
+    } else if (pkt->zipLockPType == 0x2) {
         /* readMetaData */
 
-        PacketPtr aux_pkt = pkt->preForSecure;
+        PacketPtr aux_pkt = pkt->preForZipLock;
 
         std::vector<uint8_t> metaDataEntry(64, 0);
         mem_intr->atomicRead(metaDataEntry.data(), pkt->getAddr(), pkt->getSize());
@@ -6519,7 +6519,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         stats.memToCPUMetaDataBytes += 8;
         stats.memToCPUTotalBytes += 8;
 
-        PacketPtr origin_pkt = aux_pkt->preForSecure;
+        PacketPtr origin_pkt = aux_pkt->preForZipLock;
         if (isAddressCovered(origin_pkt->getAddr(), origin_pkt->getSize(), 1)) {
             printf("finish read the metadata\n");
             printf("read metadata from memory is:\n ");
@@ -6531,7 +6531,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         if (metaDataEntry[0] < 0x80) {
             /* the metaData is not valid yet (this page is visited for the first time) */
-            initialMetaDataForSecure(metaDataEntry);
+            initialMetaDataForZipLock(metaDataEntry);
         }
 
         assert(!mcache.isFull());
@@ -6544,15 +6544,15 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         std::vector<uint8_t> metaData(8);
         memcpy(metaData.data(), metaDataEntry.data(), 8);
 
-        aux_pkt->metaDataMapForSecure[ppn] = metaData;
+        aux_pkt->metaDataMapForZipLock[ppn] = metaData;
 
-        Addr dram_addr = parseMetaDataForSecure(metaData, 0);
+        Addr dram_addr = parseMetaDataForZipLock(metaData, 0);
 
         PacketPtr readForDecompress = new Packet(aux_pkt);
-        readForDecompress->configAsSecureReadForDecompress(aux_pkt, dram_addr, 4096);
-        readForDecompress->metaDataMapForSecure[ppn] = metaData;
+        readForDecompress->configAsZipLockReadForDecompress(aux_pkt, dram_addr, 4096);
+        readForDecompress->metaDataMapForZipLock[ppn] = metaData;
 
-        if (!addToReadQueueForSecure(readForDecompress, 64, mem_intr)) {
+        if (!addToReadQueueForZipLock(readForDecompress, 64, mem_intr)) {
             if (!nextReqEvent.scheduled()) {
                 DPRINTF(MemCtrl, "Line %d: Request scheduled immediately\n", __LINE__);
                 schedule(nextReqEvent, curTick());
@@ -6561,11 +6561,11 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         tryRecyclePkt(pkt, true);
 
-    } else if (pkt->securePType == 0x4) {
+    } else if (pkt->zipLockPType == 0x4) {
         /* readForCompress */
         /* get page information */
-        assert(pkt->metaDataMapForSecure.size() == 1);
-        auto kv = pkt->metaDataMapForSecure.begin();
+        assert(pkt->metaDataMapForZipLock.size() == 1);
+        auto kv = pkt->metaDataMapForZipLock.begin();
         PPN ppn = kv->first;
         std::vector<uint8_t> metaData = kv->second;
 
@@ -6586,12 +6586,12 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         assert(pktInProcess == 0);
 
         if (cSize <= 2048) {
-            new_chunk_addr = allocateChunkForSecure(0);
+            new_chunk_addr = allocateChunkForZipLock(0);
         } else {
-            new_chunk_addr = allocateChunkForSecure(1);
+            new_chunk_addr = allocateChunkForZipLock(1);
         }
 
-        Addr old_chunk_addr = parseMetaDataForSecure(metaData, 0);
+        Addr old_chunk_addr = parseMetaDataForZipLock(metaData, 0);
         Addr new_dram_addr = new_chunk_addr + 2048;
 
         /* update the metaData */
@@ -6634,10 +6634,10 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             printf("\n");
         }
 
-        recycleChunkForSecure(old_chunk_addr, 1);
+        recycleChunkForZipLock(old_chunk_addr, 1);
 
         /* update metadata for pkts */
-        pkt->metaDataMapForSecure[ppn] = metaData;
+        pkt->metaDataMapForZipLock[ppn] = metaData;
         updateMetaDataForInProcessPkt(false, ppn, metaData);
 
         /* write the (un)compressed page to pkt's content */
@@ -6658,7 +6658,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         }
 
         /* update the metadata in memory */
-        Addr mAddr = startAddrForSecureMetaData + ppn * 8;
+        Addr mAddr = startAddrForZipLockMetaData + ppn * 8;
         mem_intr->atomicWrite(metaData, mAddr, 8);
 
         stats.cpuToMemMetaDataBytes += 8;
@@ -6666,9 +6666,9 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         
         /* create a readForWrite pkt */
         PacketPtr readForWrite = new Packet(pkt);
-        readForWrite->configAsSecureReadForWrite(pkt, new_dram_addr, 2048);
+        readForWrite->configAsZipLockReadForWrite(pkt, new_dram_addr, 2048);
 
-        if (!addToReadQueueForSecure(readForWrite, 32, mem_intr)) {
+        if (!addToReadQueueForZipLock(readForWrite, 32, mem_intr)) {
             if (!nextReqEvent.scheduled()) {
                 DPRINTF(MemCtrl, "Request scheduled immediately\n");
                 schedule(nextReqEvent, curTick());
@@ -6676,11 +6676,11 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         }
         pkt->ref_cnt--;
 
-    } else if (pkt->securePType == 0x8) {
+    } else if (pkt->zipLockPType == 0x8) {
         /* writeForCompress */
         assert(pkt->getSize() == 4096);
 
-        PacketPtr auxPkt = pkt->preForSecure;
+        PacketPtr auxPkt = pkt->preForZipLock;
 
         std::vector<uint8_t> cPage(4096);
         memcpy(cPage.data(), pkt->getPtr<uint8_t>(), 4096);
@@ -6691,16 +6691,16 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         stats.cpuToMemMigrationBytes += 4096;
 
         /* cache miss. The MC should issue a packet to read the metadata */
-        PacketPtr readMetaDataForSecure = new Packet(auxPkt);
+        PacketPtr readMetaDataForZipLock = new Packet(auxPkt);
 
         PPN ppn = (auxPkt->getAddr()) >> 12;
 
         /* cal the dram address for metadata */
-        Addr mAddr = startAddrForSecureMetaData + ppn * 8;
+        Addr mAddr = startAddrForZipLockMetaData + ppn * 8;
 
-        readMetaDataForSecure->configAsSecureReadMetaData(auxPkt, mAddr, 64);
+        readMetaDataForZipLock->configAsZipLockReadMetaData(auxPkt, mAddr, 64);
 
-        if (!addToReadQueueForSecure(readMetaDataForSecure, 1, dram)) {
+        if (!addToReadQueueForZipLock(readMetaDataForZipLock, 1, dram)) {
             // If we are not already scheduled to get a request out of the
             // queue, do so now
             if (!nextReqEvent.scheduled()) {
@@ -6712,12 +6712,12 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         tryRecyclePkt(pkt, true);
         auxPkt->ref_cnt--;
 
-    } else if (pkt->securePType == 0x10) {
+    } else if (pkt->zipLockPType == 0x10) {
         /* readForDecompress */
 
-        PacketPtr auxPkt = pkt->preForSecure;
+        PacketPtr auxPkt = pkt->preForZipLock;
         PPN ppn = auxPkt->getAddr() >> 12;
-        std::vector<uint8_t> metaData = auxPkt->metaDataMapForSecure[ppn];
+        std::vector<uint8_t> metaData = auxPkt->metaDataMapForZipLock[ppn];
 
         std::vector<uint8_t> origin_page(4096);
 
@@ -6725,7 +6725,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         if (pageIsCompressed) {
             /* the page is currently compressed */
-            uint64_t cPageSize = parseMetaDataForSecure(metaData, 1);
+            uint64_t cPageSize = parseMetaDataForZipLock(metaData, 1);
             std::vector<uint8_t> cPage(cPageSize);
 
             mem_intr->atomicRead(cPage.data(), pkt->getAddr(), cPageSize);
@@ -6752,13 +6752,13 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             printf("\n");
         }
 
-        Addr new_chunk_addr = allocateChunkForSecure(1);
-        Addr old_chunk_addr = parseMetaDataForSecure(metaData, 0);
+        Addr new_chunk_addr = allocateChunkForZipLock(1);
+        Addr old_chunk_addr = parseMetaDataForZipLock(metaData, 0);
 
         if (pageIsCompressed) {
-            recycleChunkForSecure(old_chunk_addr, 0);
+            recycleChunkForZipLock(old_chunk_addr, 0);
         } else {
-            recycleChunkForSecure(old_chunk_addr, 1);
+            recycleChunkForZipLock(old_chunk_addr, 1);
         }
 
         /* the page is valid & uncompressed */
@@ -6796,7 +6796,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         updateMetaDataForInProcessPkt(true, ppn, metaData);
 
         /* write the new metadata in mcache and memory */
-        Addr mAddr = startAddrForSecureMetaData + ppn * 8;
+        Addr mAddr = startAddrForZipLockMetaData + ppn * 8;
         assert(mcache.isExist(mAddr));
 
         std::vector<uint8_t> metaDataEntry(64, 0);
@@ -6810,12 +6810,12 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         PacketPtr writeForDecompress = new Packet(auxPkt);
 
-        writeForDecompress->configAsSecureWriteForDecompress(auxPkt, dram_addr, origin_page.data(), 4096);
-        writeForDecompress->metaDataMapForSecure[ppn] = metaData;
+        writeForDecompress->configAsZipLockWriteForDecompress(auxPkt, dram_addr, origin_page.data(), 4096);
+        writeForDecompress->metaDataMapForZipLock[ppn] = metaData;
 
         stats.numRdToMigrationBuffer += 1;
 
-        delayByDecompressForSecure[writeForDecompress] = curTick() + decompress_latency;
+        delayByDecompressForZipLock[writeForDecompress] = curTick() + decompress_latency;
 
         auxPkt->ref_cnt--;
         tryRecyclePkt(pkt);
@@ -6825,7 +6825,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             schedule(nextReqEvent, curTick());
         }
 
-    } else if (pkt->securePType == 0x20) {
+    } else if (pkt->zipLockPType == 0x20) {
         /* writeForDecompress */
         std::vector<uint8_t> dPage(4096);
         memcpy(dPage.data(), pkt->getPtr<uint8_t>(), 4096);
@@ -6834,18 +6834,18 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         stats.cpuToMemMigrationBytes += 4096;
         stats.cpuToMemTotalBytes += 4096;
 
-        blockedForSecure = false;
+        blockedForZipLock = false;
 
         /* issue the real memory request */
-        PacketPtr auxPkt = pkt->preForSecure;
-        assert(auxPkt->securePType == 0x1);
+        PacketPtr auxPkt = pkt->preForZipLock;
+        assert(auxPkt->zipLockPType == 0x1);
 
         /* translate the dram address */
         Addr addr = pkt->getAddr();
         Addr dram_addr = addr | (auxPkt->getAddr() & ((1ULL << 12) - 1));
         bool sign = false;
 
-        auxPkt->backupForSecure = auxPkt->getAddr();
+        auxPkt->backupForZipLock = auxPkt->getAddr();
         auxPkt->setAddr(dram_addr);
 
         uint32_t burst_size = dram->bytesPerBurst();
@@ -6855,7 +6855,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         unsigned int pkt_count = divCeil(pkt_offset + pkt_size, burst_size);
 
         if (auxPkt->isRead()) {
-            sign = addToReadQueueForSecure(auxPkt, pkt_count, dram);
+            sign = addToReadQueueForZipLock(auxPkt, pkt_count, dram);
             stats.readReqs++;
             stats.bytesReadSys += pkt_size;
             if (!sign) {
@@ -6867,7 +6867,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
                 }
             }
         } else {
-            addToWriteQueueForSecure(auxPkt, pkt_count, dram);
+            addToWriteQueueForZipLock(auxPkt, pkt_count, dram);
             stats.writeReqs++;
             stats.bytesWrittenSys += pkt_size;
             if (!sign) {
@@ -6879,17 +6879,17 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         }
 
         /* finally, we could process next reqs */
-        while (!blockedQueueForSecure.empty() && !blockedForSecure) {
-            PacketPtr blocked_pkt = blockedQueueForSecure.front();
+        while (!blockedQueueForZipLock.empty() && !blockedForZipLock) {
+            PacketPtr blocked_pkt = blockedQueueForZipLock.front();
             unsigned blocked_size = blocked_pkt->getSize();
 
             unsigned blocked_offset = blocked_pkt->getAddr() & (burst_size - 1);
             unsigned int blocked_pkt_count = divCeil(blocked_offset + blocked_size, burst_size);
 
-            blockedQueueForSecure.pop_front();
-            blockedNumForSecure -= blocked_pkt_count;
+            blockedQueueForZipLock.pop_front();
+            blockedNumForZipLock -= blocked_pkt_count;
 
-            bool isAccepted = recvTimingReqLogicForSecure(blocked_pkt, true);
+            bool isAccepted = recvTimingReqLogicForZipLock(blocked_pkt, true);
             assert(isAccepted);  // should be always accepted at this time
         }
 
@@ -6897,14 +6897,14 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
 
         tryRecyclePkt(auxPkt, true);
 
-    } else if (pkt->securePType == 0x40) {
+    } else if (pkt->zipLockPType == 0x40) {
         /* readForWrite */
 
-        PacketPtr readForCompress = pkt->preForSecure;
-        PacketPtr aux_pkt = readForCompress->preForSecure;
+        PacketPtr readForCompress = pkt->preForZipLock;
+        PacketPtr aux_pkt = readForCompress->preForZipLock;
 
-        std::unordered_map<PPN, std::vector<uint8_t>> metaDataMap = readForCompress->metaDataMapForSecure;
-        assert(aux_pkt->securePType == 0x1);
+        std::unordered_map<PPN, std::vector<uint8_t>> metaDataMap = readForCompress->metaDataMapForZipLock;
+        assert(aux_pkt->zipLockPType == 0x1);
         assert(metaDataMap.size() == 1);
 
         auto iter = metaDataMap.begin();
@@ -6915,7 +6915,7 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
             /* the page is uncompressed */
             memcpy(dataToWrite.data(), readForCompress->getPtr<uint8_t>(), 4096);
         } else {
-            uint64_t cPageSize = parseMetaDataForSecure(metaData, 1);
+            uint64_t cPageSize = parseMetaDataForZipLock(metaData, 1);
             memcpy(dataToWrite.data(), readForCompress->getPtr<uint8_t>(), cPageSize);
 
             mem_intr->atomicRead(dataToWrite.data() + 2048, pkt->getAddr(), 2048);
@@ -6924,12 +6924,12 @@ MemCtrl::accessAndRespondForSecure(PacketPtr pkt, Tick static_latency,
         stats.memToCPUTotalBytes += 2048;
         stats.numWrToMigrationBuffer += 1;
 
-        Addr dram_addr = parseMetaDataForSecure(metaData, 0);
+        Addr dram_addr = parseMetaDataForZipLock(metaData, 0);
 
         PacketPtr writeForCompress = new Packet(aux_pkt);
-        writeForCompress->configAsSecureWriteForCompress(aux_pkt, dram_addr, dataToWrite.data(), 4096);
+        writeForCompress->configAsZipLockWriteForCompress(aux_pkt, dram_addr, dataToWrite.data(), 4096);
 
-        addToWriteQueueForSecure(writeForCompress, 64, mem_intr);
+        addToWriteQueueForZipLock(writeForCompress, 64, mem_intr);
 
         if (!nextReqEvent.scheduled()) {
             DPRINTF(MemCtrl, "Request scheduled immediately\n");
@@ -7249,23 +7249,23 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
                  static_cast<unsigned long long>(curTick()));
             replayBlockedRequestsForDyL(mem_intr);
         }
-    } else if (operationMode == "secure") {
+    } else if (operationMode == "ZipLock") {
         std::vector<PacketPtr> keys_to_erase;
-        for (const auto &kv: delayByDecompressForSecure) {
+        for (const auto &kv: delayByDecompressForZipLock) {
             if (curTick() >= kv.second) {
-                afterDecompForSecure(kv.first, mem_intr);
+                afterDecompForZipLock(kv.first, mem_intr);
                 keys_to_erase.emplace_back(kv.first);
             }
         }
 
         for (PacketPtr key: keys_to_erase) {
-            delayByDecompressForSecure.erase(key);
+            delayByDecompressForZipLock.erase(key);
         }
 
-        if(mem_intr->readQueueSize == 0 && !delayByDecompressForSecure.empty()) {
+        if(mem_intr->readQueueSize == 0 && !delayByDecompressForZipLock.empty()) {
             assert(!next_req_event.scheduled());
             Tick targetTick = 0;
-            for (const auto &kv: delayByDecompressForSecure) {
+            for (const auto &kv: delayByDecompressForZipLock) {
                 if (targetTick == 0) {
                     targetTick = kv.second;
                 } else {
@@ -7367,7 +7367,7 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
             // if we are draining)
 
             uint64_t referSize = mem_intr->writeQueueSize;
-            if (operationMode == "DyLeCT" or operationMode == "secure") {
+            if (operationMode == "DyLeCT" or operationMode == "ZipLock") {
                 referSize = std::max(expectWriteQueueSize, referSize);
 
             }
@@ -7447,7 +7447,7 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
                         mem_pkt->qosValue(), mem_pkt->getAddr(), 1,
                         mem_pkt->readyTime - mem_pkt->entryTime);
 
-            if (operationMode == "DyLeCT" || operationMode == "secure") {
+            if (operationMode == "DyLeCT" || operationMode == "ZipLock") {
                 if (mem_pkt->memoryAccess) {
                     assert(expectReadQueueSize > 0);
                     expectReadQueueSize--;
@@ -7544,7 +7544,7 @@ MemCtrl::processNextReqEvent(MemInterface* mem_intr,
                     mem_pkt->qosValue(), mem_pkt->getAddr(), 1,
                     mem_pkt->readyTime - mem_pkt->entryTime);
 
-        if (operationMode == "DyLeCT" or operationMode == "secure") {
+        if (operationMode == "DyLeCT" or operationMode == "ZipLock") {
             if (mem_pkt->memoryAccess) {
                 assert(expectWriteQueueSize > 0);
                 expectWriteQueueSize--;
@@ -8010,8 +8010,8 @@ MemCtrl::recvFunctional(PacketPtr pkt)
         found = recvFunctionalLogicForCompr(pkt, dram);
     } else if (operationMode == "DyLeCT") {
         found = recvFunctionalLogicForDyL(pkt, dram);
-    } else if (operationMode == "secure") {
-        found = recvFunctionalLogicForSecure(pkt, dram);
+    } else if (operationMode == "ZipLock") {
+        found = recvFunctionalLogicForZipLock(pkt, dram);
     } else {
         panic("unknown mode for memory controller");
     }
@@ -8726,7 +8726,7 @@ MemCtrl::recvFunctionalLogicForDyL(PacketPtr pkt, MemInterface* mem_intr) {
 }
 
 bool
-MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
+MemCtrl::recvFunctionalLogicForZipLock(PacketPtr pkt, MemInterface* mem_intr) {
     DPRINTF(MemCtrl, "recv Functional: %s 0x%x\n",
         pkt->cmdString(), pkt->getAddr());
 
@@ -8738,23 +8738,23 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
 
     /* read metadata from dram */
     PPN ppn = (pkt->getAddr() >> 12);
-    Addr mAddr = startAddrForSecureMetaData + ppn * 8;
+    Addr mAddr = startAddrForZipLockMetaData + ppn * 8;
     std::vector<uint8_t> metaData(8);
     mem_intr->atomicRead(metaData.data(), mAddr, 8);
 
-    Addr oldAddr = parseMetaDataForSecure(metaData, 0);
+    Addr oldAddr = parseMetaDataForZipLock(metaData, 0);
     bool updateForRead = true;
 
     PacketPtr auxPkt = new Packet(pkt);
-    auxPkt->configAsSecureAuxPkt(pkt, oldAddr, pkt->getSize());
+    auxPkt->configAsZipLockAuxPkt(pkt, oldAddr, pkt->getSize());
 
     bool hasUpdateMetaData = false;
 
     if(metaData[0] < (0x1 << 7)) {
         /* the metaData is invalid now */
-        initialMetaDataForSecure(metaData);
+        initialMetaDataForZipLock(metaData);
         hasUpdateMetaData = true;
-        oldAddr = parseMetaDataForSecure(metaData, 0);
+        oldAddr = parseMetaDataForZipLock(metaData, 0);
 
     }
 
@@ -8769,7 +8769,7 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     if ((metaData[0] >> 6) & 0x1 == 1) {
         /* the page is compressed now */
 
-        uint64_t cPageSize = parseMetaDataForSecure(metaData, 1);
+        uint64_t cPageSize = parseMetaDataForZipLock(metaData, 1);
         std::vector<uint8_t> cPage(cPageSize);
         mem_intr->atomicRead(cPage.data(), oldAddr, cPageSize);
 
@@ -8812,7 +8812,7 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             }
         } else {
             /* the page could not be compressed any more */
-            Addr newAddr = allocateChunkForSecure(1);
+            Addr newAddr = allocateChunkForZipLock(1);
 
             if (pkt->isWrite()) {
                 auxPkt->setSizeForMC(4096);
@@ -8830,7 +8830,7 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
                 newAddr >>= 8;
             }
 
-            recycleChunkForSecure(oldAddr, 0);
+            recycleChunkForZipLock(oldAddr, 0);
         }
 
         hasUpdateMetaData = true;
@@ -8840,9 +8840,9 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
     }
 
     if (hasUpdateMetaData) {
-        for (auto& v: processPktListForSecure) {
-            if (v->metaDataMapForSecure.find(ppn) != v->metaDataMapForSecure.end()) {
-                v->metaDataMapForSecure[ppn] = metaData;
+        for (auto& v: processPktListForZipLock) {
+            if (v->metaDataMapForZipLock.find(ppn) != v->metaDataMapForZipLock.end()) {
+                v->metaDataMapForZipLock[ppn] = metaData;
             }
         }
 
@@ -8862,7 +8862,7 @@ MemCtrl::recvFunctionalLogicForSecure(PacketPtr pkt, MemInterface* mem_intr) {
             printf("the dram addr is 0x%lx\n", auxPkt->getAddr());
         }
 
-        mem_intr->functionalAccessForSecure(auxPkt, access_cnt, updateForRead);
+        mem_intr->functionalAccessForZipLock(auxPkt, access_cnt, updateForRead);
         delete auxPkt;
         return true;
     } else {

@@ -1580,11 +1580,11 @@ AbstractMemory::accessForNew(PacketPtr pkt, uint8_t mode) {
 
 
 void
-AbstractMemory::accessForSecure(PacketPtr pkt, unsigned long long access_cnt) {
+AbstractMemory::accessForZipLock(PacketPtr pkt, unsigned long long access_cnt) {
     /* when this function is called, the pkt is always the aux pkt*/
-    assert(pkt->securePType == 0x1);
+    assert(pkt->zipLockPType == 0x1);
     /* the origin pkt should never be changed */
-    PacketPtr origin_pkt = pkt->preForSecure;
+    PacketPtr origin_pkt = pkt->preForZipLock;
 
 
     if (origin_pkt->cacheResponding()) {
@@ -2659,11 +2659,11 @@ AbstractMemory::functionalAccessForNew(PacketPtr pkt, uint64_t burst_size, Addr 
 
 
 void
-AbstractMemory::functionalAccessForSecure(PacketPtr pkt, unsigned long long access_cnt, bool updateForRead) {
+AbstractMemory::functionalAccessForZipLock(PacketPtr pkt, unsigned long long access_cnt, bool updateForRead) {
     /* when this function is called, the pkt is always the aux pkt*/
-    assert(pkt->securePType == 0x1);
+    assert(pkt->zipLockPType == 0x1);
     /* the origin pkt should never be changed */
-    PacketPtr origin_pkt = pkt->preForSecure;
+    PacketPtr origin_pkt = pkt->preForZipLock;
 
 
     assert(pkt->getAddrRange().isSubset(range));

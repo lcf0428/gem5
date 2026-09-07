@@ -13,7 +13,7 @@ from m5.objects import *
 # ----------------------------
 # Memory controller config
 # ----------------------------
-MEM_OPERATION_MODE = "compresso"      # normal / compresso / DyLeCT
+MEM_OPERATION_MODE = "compresso"      # normal / compresso / DyLeCT / ZipLock
 RECENCY_LIST_SIZE = 0              # only useful for DyLeCT
 TICK_INTERVAL = 10                 # interval to take mem snapshots
 

@@ -104,7 +104,7 @@ class MemCtrl(QoSMemCtrl):
 
     # Add a new parameter for operation mode
     operation_mode = Param.String(
-        "normal", "memory controller operation mode: normal, compresso, DyLeCT"
+        "normal", "memory controller operation mode: normal, compresso, DyLeCT, ZipLock"
     )
 
     recency_list_size = Param.Unsigned(0, "determine the size of recency list")
